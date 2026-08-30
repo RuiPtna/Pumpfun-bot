@@ -4,6 +4,7 @@ import { executeTrade } from "./trade";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
 import { fetchDexScreenerData } from "./dexscreener";
+import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
@@ -21,6 +22,11 @@ import {
 const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : uniquement subscribeNewToken ici
 const WATCH_POLL_INTERVAL_MS = 20_000;
 const POSITION_POLL_INTERVAL_MS = 15_000;
+
+interface MarketCapReading {
+  marketCapUsd: number;
+  hasTradeCounts: boolean;
+}
 
 export class AutoTrader {
   private ws: WebSocket | null = null;
@@ -47,7 +53,7 @@ export class AutoTrader {
     this.ws.on("open", () => {
       this.ws?.send(JSON.stringify({ method: "subscribeNewToken" }));
       const mode = this.params.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)";
-      this.notify(`🟢 Auto-trading démarré — mode ${mode} (données via DexScreener)`);
+      this.notify(`🟢 Auto-trading démarré — mode ${mode} (bonding curve on-chain + DexScreener)`);
     });
 
     this.ws.on("message", (raw) => this.handleMessage(raw.toString()));
@@ -79,50 +85,75 @@ export class AutoTrader {
       return;
     }
     if (data.txType === "create" && data.mint) {
-      this.beginWatching(data.mint);
+      this.beginWatching(data.mint, data.bondingCurveKey ?? null);
     }
   }
 
-  private beginWatching(mint: string): void {
+  private beginWatching(mint: string, bondingCurveKey: string | null): void {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     state.tokensScanned += 1;
     saveBotState(this.telegramId, state);
 
-    const watch = createTokenWatch(mint, Date.now());
+    const watch = createTokenWatch(mint, bondingCurveKey, Date.now());
     this.watches.set(mint, watch);
 
     const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
     this.evalIntervals.set(mint, interval);
-    // Premier check quasi immédiat pour ne pas attendre 20s inutilement si le token est déjà indexé
     setTimeout(() => this.evaluateWatch(mint), 3_000);
 
     setTimeout(() => this.finalizeWatchIfExpired(mint), (this.params.maxAgeMinutes * 60 + 30) * 1000);
+  }
+
+  /** Lit le market cap : priorité au compte on-chain de la bonding curve, sinon DexScreener après migration. */
+  private async readMarketCap(mint: string, bondingCurveKey: string | null): Promise<MarketCapReading | null> {
+    const solPriceUsd = await getSolPriceUsd();
+
+    if (bondingCurveKey) {
+      const onChain = await fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd);
+      if (onChain && !onChain.complete) {
+        return { marketCapUsd: onChain.marketCapUsd, hasTradeCounts: false };
+      }
+      // Si complete=true (gradué) ou lecture on-chain indisponible, on tente DexScreener en repli
+    }
+
+    const dex = await fetchDexScreenerData(mint);
+    if (dex && dex.marketCapUsd > 0) {
+      return { marketCapUsd: dex.marketCapUsd, hasTradeCounts: true };
+    }
+
+    return null;
   }
 
   private async evaluateWatch(mint: string): Promise<void> {
     const watch = this.watches.get(mint);
     if (!watch || watch.decided) return;
 
-    const snapshot = await fetchDexScreenerData(mint);
-    if (!snapshot || snapshot.marketCapUsd <= 0) return; // pas encore indexé, on réessaiera au prochain cycle
+    const reading = await this.readMarketCap(mint, watch.bondingCurveKey);
+    if (!reading) return; // pas encore de donnée exploitable, on réessaiera au prochain cycle
 
-    watch.mcHistory.push({ t: Date.now(), marketCapUsd: snapshot.marketCapUsd });
+    if (reading.hasTradeCounts) {
+      const dex = await fetchDexScreenerData(mint);
+      if (dex) {
+        watch.lastLiquidityUsd = dex.liquidityUsd;
+        watch.lastBuys5m = dex.buys5m;
+        watch.lastSells5m = dex.sells5m;
+      }
+    }
+
+    watch.mcHistory.push({ t: Date.now(), marketCapUsd: reading.marketCapUsd });
     if (watch.mcHistory.length > 30) watch.mcHistory.shift();
-    watch.lastLiquidityUsd = snapshot.liquidityUsd;
-    watch.lastBuys5m = snapshot.buys5m;
-    watch.lastSells5m = snapshot.sells5m;
 
-    const hardFilter = passesHardFilters(watch, snapshot.marketCapUsd, this.params);
+    const hardFilter = passesHardFilters(watch, reading.marketCapUsd, this.params);
     if (!hardFilter.ok) {
       if (hardFilter.reason === "trop jeune") return;
       this.rejectWatch(mint, hardFilter.reason!, 0);
       return;
     }
 
-    const score = scoreToken(watch, snapshot.marketCapUsd);
+    const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
     if (score.total < this.params.minEntryScore) return;
 
-    await this.tryEnter(mint, snapshot.marketCapUsd, score.total);
+    await this.tryEnter(mint, watch.bondingCurveKey, reading.marketCapUsd, score.total);
   }
 
   private finalizeWatchIfExpired(mint: string): void {
@@ -147,7 +178,7 @@ export class AutoTrader {
     this.watches.delete(mint);
   }
 
-  private async tryEnter(mint: string, marketCapUsd: number, score: number): Promise<void> {
+  private async tryEnter(mint: string, bondingCurveKey: string | null, marketCapUsd: number, score: number): Promise<void> {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     const solPriceUsd = await getSolPriceUsd();
 
@@ -215,6 +246,7 @@ export class AutoTrader {
       const position: OpenPosition = {
         telegramId: this.telegramId,
         mint,
+        bondingCurveKey,
         entryMarketCapUsd: marketCapUsd,
         lastKnownMarketCapUsd: marketCapUsd,
         lastUpdatedAt: new Date().toISOString(),
@@ -224,6 +256,7 @@ export class AutoTrader {
         openedAt: new Date().toISOString(),
       };
       saveOpenPosition(position);
+
       logTrade({
         telegramId: this.telegramId,
         action: "buy",
@@ -254,13 +287,12 @@ export class AutoTrader {
     return (balanceLamports / 1_000_000_000) * solPriceUsd;
   }
 
-  /** Vérifie toutes les positions ouvertes de cet utilisateur à intervalle régulier. */
   private async pollAllPositions(): Promise<void> {
     const positions = getOpenPositions(this.telegramId);
     for (const position of positions) {
-      const snapshot = await fetchDexScreenerData(position.mint);
-      if (!snapshot || snapshot.marketCapUsd <= 0) continue;
-      await this.updatePositionAndCheckExit(position, snapshot.marketCapUsd);
+      const reading = await this.readMarketCap(position.mint, position.bondingCurveKey);
+      if (!reading) continue;
+      await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
     }
   }
 
