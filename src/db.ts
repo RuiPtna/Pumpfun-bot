@@ -31,6 +31,9 @@ export interface OpenPosition {
   telegramId: number;
   mint: string;
   entryPriceSol: number;
+  /** Dernier prix connu (mis à jour à chaque trade reçu sur ce token), pour afficher le PnL */
+  lastKnownPriceSol: number;
+  lastUpdatedAt: string;
   positionSizeSol: number;
   /** % de la position encore détenu (commence à 100, diminue avec les ventes par palier) */
   remainingPercent: number;
@@ -109,3 +112,5 @@ export function closePosition(telegramId: number, mint: string): void {
   data.openPositions = data.openPositions.filter(
     (p) => !(p.telegramId === telegramId && p.mint === mint)
   );
+  writeDb(data);
+}

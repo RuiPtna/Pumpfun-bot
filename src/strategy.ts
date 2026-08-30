@@ -38,6 +38,9 @@ export interface StrategyConfig {
 
   /** Priority fee en SOL pour accélérer l'inclusion des transactions */
   priorityFeeSol: number;
+
+  /** Solde minimum de SOL à toujours garder de côté (frais, marge de sécurité) */
+  reserveSolBalance: number;
 }
 
 export const defaultStrategy: StrategyConfig = {
@@ -55,6 +58,7 @@ export const defaultStrategy: StrategyConfig = {
   ],
   slippagePercent: 15,
   priorityFeeSol: 0.0005,
+  reserveSolBalance: 0.05,
 };
 
 export interface TokenSnapshot {

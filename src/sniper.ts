@@ -108,6 +108,17 @@ export class AutoTrader {
     const createdAt = this.newTokenTimestamps.get(mint);
     if (!createdAt) return; // on ne connaît pas l'âge du token, on skip par prudence
 
+    // Vérifie qu'il restera assez de SOL de côté après l'achat (frais + marge de sécurité)
+    const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
+    const balanceSol = balanceLamports / 1_000_000_000;
+    const estimatedCost = this.config.positionSizeSol + this.config.priorityFeeSol + 0.001; // + frais de réseau approximatifs
+    if (balanceSol - estimatedCost < this.config.reserveSolBalance) {
+      this.notify(
+        `⏸️ Achat sauté sur ${mint.slice(0, 8)}... : solde insuffisant pour garder la réserve de ${this.config.reserveSolBalance} SOL (solde actuel : ${balanceSol.toFixed(4)} SOL)`
+      );
+      return;
+    }
+
     // NB: PumpPortal ne donne pas directement "creatorHoldingPercent" ni
     // "uniqueBuyers" dans le flux de base — à affiner en croisant avec
     // getTokenLargestAccounts (RPC Solana) si tu veux des filtres plus fins.
@@ -137,6 +148,8 @@ export class AutoTrader {
         telegramId: this.telegramId,
         mint,
         entryPriceSol,
+        lastKnownPriceSol: entryPriceSol,
+        lastUpdatedAt: new Date().toISOString(),
         positionSizeSol: this.config.positionSizeSol,
         remainingPercent: 100,
         takeProfitLevelsHit: [],
@@ -178,6 +191,13 @@ export class AutoTrader {
     if (!tradeEvent.solAmount || !tradeEvent.tokenAmount || position.entryPriceSol <= 0) return;
 
     const currentPrice = tradeEvent.solAmount / tradeEvent.tokenAmount;
+
+    // On garde le dernier prix connu à jour à chaque trade reçu, même si aucun seuil n'est atteint,
+    // pour pouvoir l'afficher via /pnl.
+    position.lastKnownPriceSol = currentPrice;
+    position.lastUpdatedAt = new Date().toISOString();
+    saveOpenPosition(position);
+
     const gainPercent = ((currentPrice - position.entryPriceSol) / position.entryPriceSol) * 100;
 
     // Stop-loss : on vend tout ce qu'il reste

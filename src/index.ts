@@ -61,6 +61,7 @@ bot.start((ctx) => {
       "/sell <mint> <pourcentage|montant> — vendre un token",
       "/positions — voir l'historique de tes trades",
       "/openpositions — voir tes positions actuellement ouvertes",
+      "/pnl — voir le gain/perte de chaque position ouverte",
       "/config — voir et régler la stratégie automatique",
       "/set <clé> <valeur> — modifier un paramètre de la stratégie",
       "/autotrade on|off — activer/désactiver l'achat automatique",
@@ -224,6 +225,7 @@ bot.command("set", (ctx) => {
     "stopLossPercent",
     "slippagePercent",
     "priorityFeeSol",
+    "reserveSolBalance",
   ];
 
   if (!key || !valueStr || !numericKeys.includes(key as keyof StrategyConfig)) {
@@ -272,6 +274,25 @@ bot.command("autotrade", (ctx) => {
     autoTraderByUser.get(telegramId)?.stop();
     ctx.reply("🔴 Auto-trading désactivé.");
   }
+});
+
+bot.command("pnl", (ctx) => {
+  const positions = getOpenPositions(ctx.from.id);
+  if (positions.length === 0) {
+    ctx.reply("Aucune position ouverte.");
+    return;
+  }
+
+  const lines = positions.map((p) => {
+    if (!p.lastKnownPriceSol || p.entryPriceSol <= 0) {
+      return `${p.mint.slice(0, 8)}... — PnL inconnu (pas encore de trade détecté sur ce token)`;
+    }
+    const gainPercent = ((p.lastKnownPriceSol - p.entryPriceSol) / p.entryPriceSol) * 100;
+    const emoji = gainPercent >= 0 ? "🟢" : "🔴";
+    return `${emoji} ${p.mint.slice(0, 8)}... — ${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}% — reste ${p.remainingPercent}% de la position — MAJ ${new Date(p.lastUpdatedAt).toLocaleTimeString("fr-FR")}`;
+  });
+
+  ctx.reply(["📊 PnL des positions ouvertes :", "", ...lines].join("\n"));
 });
 
 bot.command("openpositions", (ctx) => {
