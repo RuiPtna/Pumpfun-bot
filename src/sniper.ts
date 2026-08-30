@@ -3,7 +3,8 @@ import { Connection, Keypair } from "@solana/web3.js";
 import { executeTrade } from "./trade";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
-import { getSolPriceUsd, PUMPFUN_TOTAL_SUPPLY } from "./priceFeed";
+import { fetchDexScreenerData } from "./dexscreener";
+import { getSolPriceUsd } from "./priceFeed";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
   logTrade,
@@ -17,13 +18,16 @@ import {
   OpenPosition,
 } from "./db";
 
-const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data";
+const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : uniquement subscribeNewToken ici
+const WATCH_POLL_INTERVAL_MS = 20_000;
+const POSITION_POLL_INTERVAL_MS = 15_000;
 
 export class AutoTrader {
   private ws: WebSocket | null = null;
   private watches = new Map<string, TokenWatch>();
   private evalIntervals = new Map<string, NodeJS.Timeout>();
-  private peakPrices = new Map<string, number>();
+  private peakMarketCaps = new Map<string, number>();
+  private positionPollInterval: NodeJS.Timeout | null = null;
   private notify: (msg: string) => void;
 
   constructor(
@@ -42,12 +46,8 @@ export class AutoTrader {
 
     this.ws.on("open", () => {
       this.ws?.send(JSON.stringify({ method: "subscribeNewToken" }));
-      const openPositions = getOpenPositions(this.telegramId);
-      if (openPositions.length > 0) {
-        this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: openPositions.map((p) => p.mint) }));
-      }
       const mode = this.params.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)";
-      this.notify(`🟢 Auto-trading démarré — mode ${mode}`);
+      this.notify(`🟢 Auto-trading démarré — mode ${mode} (données via DexScreener)`);
     });
 
     this.ws.on("message", (raw) => this.handleMessage(raw.toString()));
@@ -57,43 +57,29 @@ export class AutoTrader {
       this.ws = null;
       setTimeout(() => this.start(), 5000);
     });
+
+    this.positionPollInterval = setInterval(() => this.pollAllPositions(), POSITION_POLL_INTERVAL_MS);
   }
 
   stop(): void {
     this.evalIntervals.forEach((t) => clearInterval(t));
     this.evalIntervals.clear();
+    if (this.positionPollInterval) clearInterval(this.positionPollInterval);
+    this.positionPollInterval = null;
     this.ws?.close();
     this.ws = null;
     this.notify("⏹️ Auto-trading arrêté.");
   }
 
-  private async handleMessage(raw: string): Promise<void> {
+  private handleMessage(raw: string): void {
     let data: any;
     try {
       data = JSON.parse(raw);
     } catch {
       return;
     }
-
     if (data.txType === "create" && data.mint) {
       this.beginWatching(data.mint);
-      return;
-    }
-
-    if (data.txType === "buy" || data.txType === "sell") {
-      const mint = data.mint;
-      if (!mint) return;
-
-      const openPosition = getOpenPositions(this.telegramId).find((p) => p.mint === mint);
-      if (openPosition) {
-        await this.updatePositionAndCheckExit(openPosition, data);
-        return;
-      }
-
-      const watch = this.watches.get(mint);
-      if (watch && !watch.decided) {
-        this.recordTradeOnWatch(watch, data);
-      }
     }
   }
 
@@ -104,49 +90,39 @@ export class AutoTrader {
 
     const watch = createTokenWatch(mint, Date.now());
     this.watches.set(mint, watch);
-    this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
 
-    const interval = setInterval(() => this.evaluateWatch(mint), 20_000);
+    const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
     this.evalIntervals.set(mint, interval);
+    // Premier check quasi immédiat pour ne pas attendre 20s inutilement si le token est déjà indexé
+    setTimeout(() => this.evaluateWatch(mint), 3_000);
 
     setTimeout(() => this.finalizeWatchIfExpired(mint), (this.params.maxAgeMinutes * 60 + 30) * 1000);
-  }
-
-  private recordTradeOnWatch(watch: TokenWatch, tradeEvent: any): void {
-    if (tradeEvent.txType === "buy") {
-      watch.buyCount += 1;
-      if (tradeEvent.traderPublicKey) watch.uniqueBuyers.add(tradeEvent.traderPublicKey);
-    } else {
-      watch.sellCount += 1;
-      if (tradeEvent.traderPublicKey) watch.uniqueSellers.add(tradeEvent.traderPublicKey);
-    }
-    if (typeof tradeEvent.marketCapSol === "number") {
-      getSolPriceUsd().then((solPrice) => {
-        watch.mcHistory.push({ t: Date.now(), marketCapUsd: tradeEvent.marketCapSol * solPrice });
-        if (watch.mcHistory.length > 50) watch.mcHistory.shift();
-      });
-    }
   }
 
   private async evaluateWatch(mint: string): Promise<void> {
     const watch = this.watches.get(mint);
     if (!watch || watch.decided) return;
 
-    const solPrice = await getSolPriceUsd();
-    const lastMc = watch.mcHistory[watch.mcHistory.length - 1]?.marketCapUsd;
-    if (!lastMc) return;
+    const snapshot = await fetchDexScreenerData(mint);
+    if (!snapshot || snapshot.marketCapUsd <= 0) return; // pas encore indexé, on réessaiera au prochain cycle
 
-    const hardFilter = passesHardFilters(watch, lastMc, this.params);
+    watch.mcHistory.push({ t: Date.now(), marketCapUsd: snapshot.marketCapUsd });
+    if (watch.mcHistory.length > 30) watch.mcHistory.shift();
+    watch.lastLiquidityUsd = snapshot.liquidityUsd;
+    watch.lastBuys5m = snapshot.buys5m;
+    watch.lastSells5m = snapshot.sells5m;
+
+    const hardFilter = passesHardFilters(watch, snapshot.marketCapUsd, this.params);
     if (!hardFilter.ok) {
       if (hardFilter.reason === "trop jeune") return;
       this.rejectWatch(mint, hardFilter.reason!, 0);
       return;
     }
 
-    const score = scoreToken(watch, lastMc);
+    const score = scoreToken(watch, snapshot.marketCapUsd);
     if (score.total < this.params.minEntryScore) return;
 
-    await this.tryEnter(mint, watch, lastMc, score.total, solPrice);
+    await this.tryEnter(mint, snapshot.marketCapUsd, score.total);
   }
 
   private finalizeWatchIfExpired(mint: string): void {
@@ -162,7 +138,6 @@ export class AutoTrader {
     const interval = this.evalIntervals.get(mint);
     if (interval) clearInterval(interval);
     this.evalIntervals.delete(mint);
-    this.ws?.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [mint] }));
 
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     state.tokensRejected += 1;
@@ -172,14 +147,9 @@ export class AutoTrader {
     this.watches.delete(mint);
   }
 
-  private async tryEnter(
-    mint: string,
-    watch: TokenWatch,
-    marketCapUsd: number,
-    score: number,
-    solPriceUsd: number
-  ): Promise<void> {
+  private async tryEnter(mint: string, marketCapUsd: number, score: number): Promise<void> {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
+    const solPriceUsd = await getSolPriceUsd();
 
     const today = new Date().toISOString().slice(0, 10);
     if (state.dailyDate !== today) {
@@ -213,8 +183,6 @@ export class AutoTrader {
     }
 
     const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
-    const entryPriceSol = marketCapUsd / solPriceUsd / PUMPFUN_TOTAL_SUPPLY;
-
     saveBotState(this.telegramId, state);
 
     try {
@@ -239,7 +207,7 @@ export class AutoTrader {
           priorityFeeSol: this.params.priorityFeeSol,
         });
       } else {
-        simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd / PUMPFUN_TOTAL_SUPPLY);
+        simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd);
         signature = `PAPER-${Date.now()}`;
         this.notify(`🎯 [PAPER] Score ${score}/100 sur ${mint.slice(0, 8)}... — achat simulé de $${positionSizeUsd.toFixed(2)}`);
       }
@@ -247,10 +215,10 @@ export class AutoTrader {
       const position: OpenPosition = {
         telegramId: this.telegramId,
         mint,
-        entryPriceSol,
-        lastKnownPriceSol: entryPriceSol,
+        entryMarketCapUsd: marketCapUsd,
+        lastKnownMarketCapUsd: marketCapUsd,
         lastUpdatedAt: new Date().toISOString(),
-        positionSizeSol: this.params.liveTrading ? positionSizeUsd / solPriceUsd : positionSizeUsd,
+        positionSizeUsd,
         remainingPercent: 100,
         takeProfitLevelsHit: [],
         openedAt: new Date().toISOString(),
@@ -260,7 +228,7 @@ export class AutoTrader {
         telegramId: this.telegramId,
         action: "buy",
         mint,
-        amountSol: position.positionSizeSol,
+        amountSol: this.params.liveTrading ? positionSizeUsd / solPriceUsd : 0,
         signature,
         timestamp: new Date().toISOString(),
       });
@@ -286,14 +254,23 @@ export class AutoTrader {
     return (balanceLamports / 1_000_000_000) * solPriceUsd;
   }
 
-  private async updatePositionAndCheckExit(position: OpenPosition, tradeEvent: any): Promise<void> {
-    if (!tradeEvent.marketCapSol || position.entryPriceSol <= 0) return;
+  /** Vérifie toutes les positions ouvertes de cet utilisateur à intervalle régulier. */
+  private async pollAllPositions(): Promise<void> {
+    const positions = getOpenPositions(this.telegramId);
+    for (const position of positions) {
+      const snapshot = await fetchDexScreenerData(position.mint);
+      if (!snapshot || snapshot.marketCapUsd <= 0) continue;
+      await this.updatePositionAndCheckExit(position, snapshot.marketCapUsd);
+    }
+  }
 
-    const currentPriceSol = tradeEvent.marketCapSol / PUMPFUN_TOTAL_SUPPLY;
-    position.lastKnownPriceSol = currentPriceSol;
+  private async updatePositionAndCheckExit(position: OpenPosition, currentMarketCapUsd: number): Promise<void> {
+    if (position.entryMarketCapUsd <= 0) return;
+
+    position.lastKnownMarketCapUsd = currentMarketCapUsd;
     position.lastUpdatedAt = new Date().toISOString();
 
-    const gainPercent = ((currentPriceSol - position.entryPriceSol) / position.entryPriceSol) * 100;
+    const gainPercent = ((currentMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100;
 
     if (gainPercent <= this.params.stopLossPercent) {
       await this.exitPosition(position, 100, gainPercent, `🛑 Stop-loss déclenché (${gainPercent.toFixed(1)}%)`);
@@ -314,9 +291,9 @@ export class AutoTrader {
     }
 
     if (position.takeProfitLevelsHit.includes(this.params.tp3Percent) && position.remainingPercent > 0) {
-      const peak = Math.max(this.peakPrices.get(position.mint) ?? currentPriceSol, currentPriceSol);
-      this.peakPrices.set(position.mint, peak);
-      const dropFromPeakPercent = ((peak - currentPriceSol) / peak) * 100;
+      const peak = Math.max(this.peakMarketCaps.get(position.mint) ?? currentMarketCapUsd, currentMarketCapUsd);
+      this.peakMarketCaps.set(position.mint, peak);
+      const dropFromPeakPercent = ((peak - currentMarketCapUsd) / peak) * 100;
       if (dropFromPeakPercent >= this.params.trailingStopPercent) {
         await this.exitPosition(
           position,
@@ -350,7 +327,7 @@ export class AutoTrader {
           priorityFeeSol: this.params.priorityFeeSol,
         });
       } else {
-        const usdReceived = position.positionSizeSol * (sellPercent / 100) * (1 + gainPercent / 100);
+        const usdReceived = position.positionSizeUsd * (sellPercent / 100) * (1 + gainPercent / 100);
         simulateSell(this.telegramId, position.mint, usdReceived);
         signature = `PAPER-${Date.now()}`;
       }
@@ -363,7 +340,7 @@ export class AutoTrader {
         timestamp: new Date().toISOString(),
       });
 
-      const pnlUsdForSlice = position.positionSizeSol * (sellPercent / 100) * (gainPercent / 100);
+      const pnlUsdForSlice = position.positionSizeUsd * (sellPercent / 100) * (gainPercent / 100);
       logClosedTrade({
         telegramId: this.telegramId,
         mint: position.mint,
@@ -391,8 +368,7 @@ export class AutoTrader {
       position.remainingPercent -= sellPercent;
       if (position.remainingPercent <= 0) {
         closePosition(this.telegramId, position.mint);
-        this.peakPrices.delete(position.mint);
-        this.ws?.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [position.mint] }));
+        this.peakMarketCaps.delete(position.mint);
       } else {
         saveOpenPosition(position);
       }

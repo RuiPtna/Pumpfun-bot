@@ -3,7 +3,12 @@ let cachedAt = 0;
 const CACHE_DURATION_MS = 60_000;
 const FALLBACK_PRICE_USD = 150; // utilisé uniquement si l'appel réseau échoue
 
-/** Cours SOL/USD, mis en cache 60s pour éviter de spammer l'API à chaque événement. */
+/**
+ * Cours SOL/USD, mis en cache 60s. Utilisé uniquement pour convertir une
+ * taille de position en USD vers un montant de SOL à envoyer sur pump.fun —
+ * plus besoin pour le suivi de PnL, qui se base directement sur le market
+ * cap en USD fourni par DexScreener.
+ */
 export async function getSolPriceUsd(): Promise<number> {
   const now = Date.now();
   if (cachedPrice && now - cachedAt < CACHE_DURATION_MS) return cachedPrice;
@@ -24,10 +29,3 @@ export async function getSolPriceUsd(): Promise<number> {
 
   return cachedPrice ?? FALLBACK_PRICE_USD;
 }
-
-/**
- * ⚠️ Supposition documentée : les tokens lancés sur pump.fun ont une supply
- * totale standard de 1 milliard de tokens. C'est la valeur utilisée par le
- * protocole pour toutes les bonding curves classiques.
- */
-export const PUMPFUN_TOTAL_SUPPLY = 1_000_000_000;

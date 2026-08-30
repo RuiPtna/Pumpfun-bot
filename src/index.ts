@@ -249,8 +249,8 @@ bot.command("pnl", (ctx) => {
     return;
   }
   const lines = positions.map((p) => {
-    if (!p.lastKnownPriceSol || p.entryPriceSol <= 0) return `${p.mint.slice(0, 8)}... — PnL inconnu`;
-    const gainPercent = ((p.lastKnownPriceSol - p.entryPriceSol) / p.entryPriceSol) * 100;
+    if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) return `${p.mint.slice(0, 8)}... — PnL inconnu`;
+    const gainPercent = ((p.lastKnownMarketCapUsd - p.entryMarketCapUsd) / p.entryMarketCapUsd) * 100;
     const emoji = gainPercent >= 0 ? "🟢" : "🔴";
     return `${emoji} ${p.mint.slice(0, 8)}... — ${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}% — reste ${p.remainingPercent}%`;
   });

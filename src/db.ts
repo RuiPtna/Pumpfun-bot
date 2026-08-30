@@ -30,11 +30,11 @@ export interface Trade {
 export interface OpenPosition {
   telegramId: number;
   mint: string;
-  entryPriceSol: number;
-  /** Dernier prix connu (mis à jour à chaque trade reçu sur ce token), pour afficher le PnL */
-  lastKnownPriceSol: number;
+  entryMarketCapUsd: number;
+  /** Dernier market cap connu (mis à jour à chaque poll DexScreener), pour afficher le PnL */
+  lastKnownMarketCapUsd: number;
   lastUpdatedAt: string;
-  positionSizeSol: number;
+  positionSizeUsd: number;
   /** % de la position encore détenu (commence à 100, diminue avec les ventes par palier) */
   remainingPercent: number;
   /** Paliers de take-profit déjà déclenchés, pour ne pas les redéclencher */
