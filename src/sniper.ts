@@ -1,64 +1,67 @@
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import WebSocket from "ws";
+import { Connection, Keypair } from "@solana/web3.js";
 import { executeTrade } from "./trade";
-import { passesEntryFilters, StrategyConfig, TokenSnapshot } from "./strategy";
-import { logTrade, getOpenPositions, saveOpenPosition, closePosition, OpenPosition } from "./db";
+import { StrategyParams } from "./config";
+import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
+import { getSolPriceUsd, PUMPFUN_TOTAL_SUPPLY } from "./priceFeed";
+import { simulateBuy, simulateSell } from "./paperTrading";
+import {
+  logTrade,
+  getOpenPositions,
+  saveOpenPosition,
+  closePosition,
+  logRejectedToken,
+  logClosedTrade,
+  getBotState,
+  saveBotState,
+  OpenPosition,
+} from "./db";
 
 const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data";
 
-/**
- * Gère, pour UN utilisateur/wallet donné :
- * - l'écoute des nouveaux tokens pump.fun et l'achat automatique si les filtres passent
- * - le suivi de prix des positions ouvertes pour déclencher stop-loss / take-profit
- *
- * Limitation volontaire : conçu pour un usage mono-utilisateur (le tien).
- * Pour gérer plusieurs utilisateurs en parallèle, il faudrait une instance
- * de AutoTrader par utilisateur, avec des WebSockets/positions séparées.
- */
 export class AutoTrader {
   private ws: WebSocket | null = null;
-  private newTokenTimestamps = new Map<string, number>();
+  private watches = new Map<string, TokenWatch>();
+  private evalIntervals = new Map<string, NodeJS.Timeout>();
+  private peakPrices = new Map<string, number>();
   private notify: (msg: string) => void;
 
   constructor(
     private telegramId: number,
     private connection: Connection,
     private signer: Keypair,
-    private config: StrategyConfig,
+    private params: StrategyParams,
     notifyFn: (msg: string) => void
   ) {
     this.notify = notifyFn;
   }
 
   start(): void {
-    if (this.ws) return; // déjà démarré
+    if (this.ws) return;
     this.ws = new WebSocket(PUMPPORTAL_WS);
 
     this.ws.on("open", () => {
       this.ws?.send(JSON.stringify({ method: "subscribeNewToken" }));
-      // Ré-abonne aux trades des positions déjà ouvertes (redémarrage du bot)
       const openPositions = getOpenPositions(this.telegramId);
       if (openPositions.length > 0) {
-        this.ws?.send(
-          JSON.stringify({
-            method: "subscribeTokenTrade",
-            keys: openPositions.map((p) => p.mint),
-          })
-        );
+        this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: openPositions.map((p) => p.mint) }));
       }
-      this.notify("🟢 Auto-trading démarré : écoute des nouveaux tokens en cours...");
+      const mode = this.params.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)";
+      this.notify(`🟢 Auto-trading démarré — mode ${mode}`);
     });
 
     this.ws.on("message", (raw) => this.handleMessage(raw.toString()));
     this.ws.on("error", (err) => this.notify(`⚠️ Erreur WebSocket : ${err.message}`));
     this.ws.on("close", () => {
-      this.notify("🔴 Connexion au flux de données perdue, reconnexion dans 5s...");
+      this.notify("🔴 Connexion perdue, reconnexion dans 5s...");
       this.ws = null;
       setTimeout(() => this.start(), 5000);
     });
   }
 
   stop(): void {
+    this.evalIntervals.forEach((t) => clearInterval(t));
+    this.evalIntervals.clear();
     this.ws?.close();
     this.ws = null;
     this.notify("⏹️ Auto-trading arrêté.");
@@ -72,77 +75,174 @@ export class AutoTrader {
       return;
     }
 
-    // Nouveau token créé : on programme une tentative d'achat après le délai minimum,
-    // au lieu d'attendre un événement de trade qui n'arrivera jamais pour un token
-    // auquel on n'est pas encore abonné.
     if (data.txType === "create" && data.mint) {
-      this.newTokenTimestamps.set(data.mint, Date.now());
-      setTimeout(() => {
-        this.maybeEnterPosition(data.mint, data).catch((err) =>
-          this.notify(`⚠️ Erreur lors de la tentative d'achat sur ${data.mint.slice(0, 8)}... : ${err.message}`)
-        );
-      }, this.config.minTokenAgeSeconds * 1000);
+      this.beginWatching(data.mint);
       return;
     }
 
-    // Trade sur un token qu'on suit déjà (position ouverte uniquement désormais)
     if (data.txType === "buy" || data.txType === "sell") {
       const mint = data.mint;
       if (!mint) return;
 
       const openPosition = getOpenPositions(this.telegramId).find((p) => p.mint === mint);
       if (openPosition) {
-        await this.checkExitConditions(openPosition, data);
+        await this.updatePositionAndCheckExit(openPosition, data);
+        return;
       }
-      return;
+
+      const watch = this.watches.get(mint);
+      if (watch && !watch.decided) {
+        this.recordTradeOnWatch(watch, data);
+      }
     }
   }
 
-  private async maybeEnterPosition(mint: string, tradeEvent: any): Promise<void> {
-    if (!this.config.autoTradeEnabled) return;
+  private beginWatching(mint: string): void {
+    const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
+    state.tokensScanned += 1;
+    saveBotState(this.telegramId, state);
 
-    const openPositions = getOpenPositions(this.telegramId);
-    if (openPositions.length >= this.config.maxOpenPositions) return;
-    if (openPositions.some((p) => p.mint === mint)) return;
+    const watch = createTokenWatch(mint, Date.now());
+    this.watches.set(mint, watch);
+    this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
 
-    const createdAt = this.newTokenTimestamps.get(mint);
-    if (!createdAt) return; // on ne connaît pas l'âge du token, on skip par prudence
+    const interval = setInterval(() => this.evaluateWatch(mint), 20_000);
+    this.evalIntervals.set(mint, interval);
 
-    // Vérifie qu'il restera assez de SOL de côté après l'achat (frais + marge de sécurité)
-    const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
-    const balanceSol = balanceLamports / 1_000_000_000;
-    const estimatedCost = this.config.positionSizeSol + this.config.priorityFeeSol + 0.001; // + frais de réseau approximatifs
-    if (balanceSol - estimatedCost < this.config.reserveSolBalance) {
-      this.notify(
-        `⏸️ Achat sauté sur ${mint.slice(0, 8)}... : solde insuffisant pour garder la réserve de ${this.config.reserveSolBalance} SOL (solde actuel : ${balanceSol.toFixed(4)} SOL)`
-      );
+    setTimeout(() => this.finalizeWatchIfExpired(mint), (this.params.maxAgeMinutes * 60 + 30) * 1000);
+  }
+
+  private recordTradeOnWatch(watch: TokenWatch, tradeEvent: any): void {
+    if (tradeEvent.txType === "buy") {
+      watch.buyCount += 1;
+      if (tradeEvent.traderPublicKey) watch.uniqueBuyers.add(tradeEvent.traderPublicKey);
+    } else {
+      watch.sellCount += 1;
+      if (tradeEvent.traderPublicKey) watch.uniqueSellers.add(tradeEvent.traderPublicKey);
+    }
+    if (typeof tradeEvent.marketCapSol === "number") {
+      getSolPriceUsd().then((solPrice) => {
+        watch.mcHistory.push({ t: Date.now(), marketCapUsd: tradeEvent.marketCapSol * solPrice });
+        if (watch.mcHistory.length > 50) watch.mcHistory.shift();
+      });
+    }
+  }
+
+  private async evaluateWatch(mint: string): Promise<void> {
+    const watch = this.watches.get(mint);
+    if (!watch || watch.decided) return;
+
+    const solPrice = await getSolPriceUsd();
+    const lastMc = watch.mcHistory[watch.mcHistory.length - 1]?.marketCapUsd;
+    if (!lastMc) return;
+
+    const hardFilter = passesHardFilters(watch, lastMc, this.params);
+    if (!hardFilter.ok) {
+      if (hardFilter.reason === "trop jeune") return;
+      this.rejectWatch(mint, hardFilter.reason!, 0);
       return;
     }
 
-    // NB: PumpPortal ne donne pas directement "creatorHoldingPercent" ni
-    // "uniqueBuyers" dans le flux de base — à affiner en croisant avec
-    // getTokenLargestAccounts (RPC Solana) si tu veux des filtres plus fins.
-    const snapshot: TokenSnapshot = {
-      mint,
-      createdAt,
-      creatorHoldingPercent: tradeEvent.creatorHoldingPercent ?? 0,
-      uniqueBuyers: tradeEvent.uniqueBuyers ?? this.config.minUniqueBuyers, // valeur neutre si absente
-    };
+    const score = scoreToken(watch, lastMc);
+    if (score.total < this.params.minEntryScore) return;
 
-    if (!passesEntryFilters(snapshot, this.config)) return;
+    await this.tryEnter(mint, watch, lastMc, score.total, solPrice);
+  }
+
+  private finalizeWatchIfExpired(mint: string): void {
+    const watch = this.watches.get(mint);
+    if (!watch || watch.decided) return;
+    this.rejectWatch(mint, "fenêtre d'observation expirée sans setup validé", 0);
+  }
+
+  private rejectWatch(mint: string, reason: string, score: number): void {
+    const watch = this.watches.get(mint);
+    if (watch) watch.decided = true;
+
+    const interval = this.evalIntervals.get(mint);
+    if (interval) clearInterval(interval);
+    this.evalIntervals.delete(mint);
+    this.ws?.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [mint] }));
+
+    const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
+    state.tokensRejected += 1;
+    saveBotState(this.telegramId, state);
+    logRejectedToken({ telegramId: this.telegramId, mint, reason, score, timestamp: new Date().toISOString() });
+
+    this.watches.delete(mint);
+  }
+
+  private async tryEnter(
+    mint: string,
+    watch: TokenWatch,
+    marketCapUsd: number,
+    score: number,
+    solPriceUsd: number
+  ): Promise<void> {
+    const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
+
+    const today = new Date().toISOString().slice(0, 10);
+    if (state.dailyDate !== today) {
+      state.dailyDate = today;
+      state.dailyStartCapitalUsd = this.params.liveTrading
+        ? await this.getRealCapitalUsd(solPriceUsd)
+        : state.paperCapitalUsd;
+    }
+
+    const currentCapitalUsd = this.params.liveTrading
+      ? await this.getRealCapitalUsd(solPriceUsd)
+      : state.paperCapitalUsd;
+    const dailyPnlPercent = ((currentCapitalUsd - state.dailyStartCapitalUsd) / state.dailyStartCapitalUsd) * 100;
+    if (dailyPnlPercent <= -this.params.maxDailyLossPercent) {
+      this.rejectWatch(mint, "limite de perte quotidienne atteinte — trading en pause pour aujourd'hui", score);
+      return;
+    }
+
+    if (state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
+      if (score < this.params.minScoreAfterPause) {
+        this.rejectWatch(mint, `bot en pause après pertes consécutives (jusqu'à ${state.pausedUntil})`, score);
+        return;
+      }
+      this.notify(`⚡ Score exceptionnel (${score}/100) pendant la pause — entrée exceptionnelle autorisée`);
+    }
+
+    const openPositions = getOpenPositions(this.telegramId);
+    if (openPositions.length >= this.params.maxOpenPositions) {
+      this.rejectWatch(mint, "nombre maximum de positions déjà atteint", score);
+      return;
+    }
+
+    const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
+    const entryPriceSol = marketCapUsd / solPriceUsd / PUMPFUN_TOTAL_SUPPLY;
+
+    saveBotState(this.telegramId, state);
 
     try {
-      this.notify(`🎯 Signal d'achat détecté sur ${mint.slice(0, 8)}... — exécution...`);
-      const signature = await executeTrade(this.connection, this.signer, {
-        action: "buy",
-        mint,
-        amount: this.config.positionSizeSol,
-        denominatedInSol: true,
-        slippagePercent: this.config.slippagePercent,
-        priorityFeeSol: this.config.priorityFeeSol,
-      });
+      let signature: string;
+      if (this.params.liveTrading) {
+        const positionSizeSol = positionSizeUsd / solPriceUsd;
 
-      const entryPriceSol = await this.getTokenPriceAfterBuy(mint, this.config.positionSizeSol);
+        const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
+        const balanceSol = balanceLamports / 1_000_000_000;
+        if (balanceSol - positionSizeSol - this.params.priorityFeeSol - 0.001 < this.params.reserveSolBalance) {
+          this.rejectWatch(mint, "solde insuffisant pour garder la réserve de sécurité", score);
+          return;
+        }
+
+        this.notify(`🎯 [LIVE] Score ${score}/100 sur ${mint.slice(0, 8)}... — achat de ${positionSizeSol.toFixed(4)} SOL`);
+        signature = await executeTrade(this.connection, this.signer, {
+          action: "buy",
+          mint,
+          amount: positionSizeSol,
+          denominatedInSol: true,
+          slippagePercent: this.params.maxSlippagePercent,
+          priorityFeeSol: this.params.priorityFeeSol,
+        });
+      } else {
+        simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd / PUMPFUN_TOTAL_SUPPLY);
+        signature = `PAPER-${Date.now()}`;
+        this.notify(`🎯 [PAPER] Score ${score}/100 sur ${mint.slice(0, 8)}... — achat simulé de $${positionSizeUsd.toFixed(2)}`);
+      }
 
       const position: OpenPosition = {
         telegramId: this.telegramId,
@@ -150,7 +250,7 @@ export class AutoTrader {
         entryPriceSol,
         lastKnownPriceSol: entryPriceSol,
         lastUpdatedAt: new Date().toISOString(),
-        positionSizeSol: this.config.positionSizeSol,
+        positionSizeSol: this.params.liveTrading ? positionSizeUsd / solPriceUsd : positionSizeUsd,
         remainingPercent: 100,
         takeProfitLevelsHit: [],
         openedAt: new Date().toISOString(),
@@ -160,77 +260,100 @@ export class AutoTrader {
         telegramId: this.telegramId,
         action: "buy",
         mint,
-        amountSol: this.config.positionSizeSol,
+        amountSol: position.positionSizeSol,
         signature,
         timestamp: new Date().toISOString(),
       });
 
-      this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
-      this.notify(`✅ Achat auto exécuté sur ${mint.slice(0, 8)}...\nhttps://solscan.io/tx/${signature}`);
-    } catch (err) {
-      this.notify(`❌ Échec achat auto sur ${mint.slice(0, 8)}... : ${(err as Error).message}`);
-    }
-  }
+      const watchObj = this.watches.get(mint);
+      if (watchObj) watchObj.decided = true;
+      const interval = this.evalIntervals.get(mint);
+      if (interval) clearInterval(interval);
+      this.evalIntervals.delete(mint);
 
-  /** Récupère le solde de tokens obtenu après un achat, pour calculer le vrai prix d'entrée. */
-  private async getTokenPriceAfterBuy(mint: string, solSpent: number): Promise<number> {
-    try {
-      const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-        this.signer.publicKey,
-        { mint: new PublicKey(mint) }
+      this.notify(
+        `✅ Position ouverte sur ${mint.slice(0, 8)}...${
+          this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
+        }`
       );
-      const tokensReceived = tokenAccounts.value[0]?.account.data.parsed.info.tokenAmount.uiAmount;
-      if (!tokensReceived || tokensReceived <= 0) return 0;
-      return solSpent / tokensReceived;
-    } catch {
-      return 0; // si le calcul échoue, le stop-loss/take-profit ne pourra pas s'appliquer sur cette position
+    } catch (err) {
+      this.notify(`❌ Échec de l'entrée sur ${mint.slice(0, 8)}... : ${(err as Error).message}`);
     }
   }
 
-  private async checkExitConditions(position: OpenPosition, tradeEvent: any): Promise<void> {
-    if (!tradeEvent.solAmount || !tradeEvent.tokenAmount || position.entryPriceSol <= 0) return;
+  private async getRealCapitalUsd(solPriceUsd: number): Promise<number> {
+    const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
+    return (balanceLamports / 1_000_000_000) * solPriceUsd;
+  }
 
-    const currentPrice = tradeEvent.solAmount / tradeEvent.tokenAmount;
+  private async updatePositionAndCheckExit(position: OpenPosition, tradeEvent: any): Promise<void> {
+    if (!tradeEvent.marketCapSol || position.entryPriceSol <= 0) return;
 
-    // On garde le dernier prix connu à jour à chaque trade reçu, même si aucun seuil n'est atteint,
-    // pour pouvoir l'afficher via /pnl.
-    position.lastKnownPriceSol = currentPrice;
+    const currentPriceSol = tradeEvent.marketCapSol / PUMPFUN_TOTAL_SUPPLY;
+    position.lastKnownPriceSol = currentPriceSol;
     position.lastUpdatedAt = new Date().toISOString();
-    saveOpenPosition(position);
 
-    const gainPercent = ((currentPrice - position.entryPriceSol) / position.entryPriceSol) * 100;
+    const gainPercent = ((currentPriceSol - position.entryPriceSol) / position.entryPriceSol) * 100;
 
-    // Stop-loss : on vend tout ce qu'il reste
-    if (gainPercent <= this.config.stopLossPercent) {
-      await this.exitPosition(position, "100%", `🛑 Stop-loss déclenché (${gainPercent.toFixed(1)}%)`);
+    if (gainPercent <= this.params.stopLossPercent) {
+      await this.exitPosition(position, 100, gainPercent, `🛑 Stop-loss déclenché (${gainPercent.toFixed(1)}%)`);
       return;
     }
 
-    // Take-profit par paliers
-    for (const level of this.config.takeProfitLevels) {
-      const alreadyHit = position.takeProfitLevelsHit.includes(level.gainPercent);
-      if (!alreadyHit && gainPercent >= level.gainPercent) {
-        position.takeProfitLevelsHit.push(level.gainPercent);
+    const levels = [
+      { key: "TP1", gain: this.params.tp1Percent, sell: this.params.tp1SellPercent },
+      { key: "TP2", gain: this.params.tp2Percent, sell: this.params.tp2SellPercent },
+      { key: "TP3", gain: this.params.tp3Percent, sell: this.params.tp3SellPercent },
+    ];
+
+    for (const level of levels) {
+      if (!position.takeProfitLevelsHit.includes(level.gain) && gainPercent >= level.gain) {
+        position.takeProfitLevelsHit.push(level.gain);
+        await this.exitPosition(position, level.sell, gainPercent, `🎉 ${level.key} +${level.gain}% atteint`);
+      }
+    }
+
+    if (position.takeProfitLevelsHit.includes(this.params.tp3Percent) && position.remainingPercent > 0) {
+      const peak = Math.max(this.peakPrices.get(position.mint) ?? currentPriceSol, currentPriceSol);
+      this.peakPrices.set(position.mint, peak);
+      const dropFromPeakPercent = ((peak - currentPriceSol) / peak) * 100;
+      if (dropFromPeakPercent >= this.params.trailingStopPercent) {
         await this.exitPosition(
           position,
-          `${level.sellPercent}%`,
-          `🎉 Take-profit +${level.gainPercent}% atteint, vente de ${level.sellPercent}%`
+          100,
+          gainPercent,
+          `📉 Trailing stop déclenché (-${dropFromPeakPercent.toFixed(1)}% depuis le plus haut)`
         );
       }
     }
+
+    saveOpenPosition(position);
   }
 
-  private async exitPosition(position: OpenPosition, sellAmount: string, reason: string): Promise<void> {
+  private async exitPosition(
+    position: OpenPosition,
+    sellPercent: number,
+    gainPercent: number,
+    reason: string
+  ): Promise<void> {
     try {
       this.notify(`${reason} sur ${position.mint.slice(0, 8)}...`);
-      const signature = await executeTrade(this.connection, this.signer, {
-        action: "sell",
-        mint: position.mint,
-        amount: sellAmount,
-        denominatedInSol: false,
-        slippagePercent: this.config.slippagePercent,
-        priorityFeeSol: this.config.priorityFeeSol,
-      });
+      let signature: string;
+
+      if (this.params.liveTrading) {
+        signature = await executeTrade(this.connection, this.signer, {
+          action: "sell",
+          mint: position.mint,
+          amount: `${sellPercent}%`,
+          denominatedInSol: false,
+          slippagePercent: this.params.maxSlippagePercent,
+          priorityFeeSol: this.params.priorityFeeSol,
+        });
+      } else {
+        const usdReceived = position.positionSizeSol * (sellPercent / 100) * (1 + gainPercent / 100);
+        simulateSell(this.telegramId, position.mint, usdReceived);
+        signature = `PAPER-${Date.now()}`;
+      }
 
       logTrade({
         telegramId: this.telegramId,
@@ -240,15 +363,45 @@ export class AutoTrader {
         timestamp: new Date().toISOString(),
       });
 
-      const soldPercent = parseInt(sellAmount, 10);
-      position.remainingPercent -= soldPercent;
+      const pnlUsdForSlice = position.positionSizeSol * (sellPercent / 100) * (gainPercent / 100);
+      logClosedTrade({
+        telegramId: this.telegramId,
+        mint: position.mint,
+        pnlUsd: pnlUsdForSlice,
+        pnlPercent: gainPercent,
+        wasPaper: !this.params.liveTrading,
+        closedAt: new Date().toISOString(),
+      });
+
+      if (sellPercent === 100) {
+        const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
+        if (gainPercent < 0) {
+          state.consecutiveLosses += 1;
+          if (state.consecutiveLosses >= this.params.consecutiveLossesForPause) {
+            state.pausedUntil = new Date(Date.now() + this.params.pauseDurationMinutes * 60_000).toISOString();
+            this.notify(`⏸️ ${state.consecutiveLosses} pertes consécutives — pause de ${this.params.pauseDurationMinutes} min`);
+          }
+        } else {
+          state.consecutiveLosses = 0;
+          state.pausedUntil = null;
+        }
+        saveBotState(this.telegramId, state);
+      }
+
+      position.remainingPercent -= sellPercent;
       if (position.remainingPercent <= 0) {
         closePosition(this.telegramId, position.mint);
+        this.peakPrices.delete(position.mint);
+        this.ws?.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [position.mint] }));
       } else {
         saveOpenPosition(position);
       }
 
-      this.notify(`✅ Vente exécutée.\nhttps://solscan.io/tx/${signature}`);
+      this.notify(
+        `✅ Vente exécutée (${sellPercent}% de la position).${
+          this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
+        }`
+      );
     } catch (err) {
       this.notify(`❌ Échec de la vente sur ${position.mint.slice(0, 8)}... : ${(err as Error).message}`);
     }
