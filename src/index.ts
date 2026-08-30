@@ -1,433 +1,408 @@
-import WebSocket from "ws";
-import { Connection, Keypair } from "@solana/web3.js";
+import "dotenv/config";
+import { Telegraf } from "telegraf";
+import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { getOrCreateWallet, loadKeypair, exportPrivateKeyBase58 } from "./wallet";
 import { executeTrade } from "./trade";
+import { sendSol } from "./transfer";
 import { sellWithFallback } from "./sellWithFallback";
-import { StrategyParams } from "./config";
-import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
-import { fetchDexScreenerData } from "./dexscreener";
-import { fetchBondingCurveMarketCap } from "./bondingCurve";
-import { getSolPriceUsd } from "./priceFeed";
-import { simulateBuy, simulateSell } from "./paperTrading";
 import {
-  logTrade,
+  getTrades,
   getOpenPositions,
-  saveOpenPosition,
-  closePosition,
-  logRejectedToken,
-  logClosedTrade,
+  getRejectedTokens,
+  getClosedTrades,
   getBotState,
-  saveBotState,
-  OpenPosition,
 } from "./db";
+import { AutoTrader } from "./sniper";
+import { defaultParams, numericParamKeys, booleanParamKeys, StrategyParams } from "./config";
 
-const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : uniquement subscribeNewToken ici
-const WATCH_POLL_INTERVAL_MS = 20_000;
-const POSITION_POLL_INTERVAL_MS = 15_000;
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const RPC_ENDPOINT = process.env.SOLANA_RPC_ENDPOINT || "https://api.mainnet-beta.solana.com";
 
-interface MarketCapReading {
-  marketCapUsd: number;
-  hasTradeCounts: boolean;
-  realSolReserves: number;
+if (!BOT_TOKEN) {
+  throw new Error("TELEGRAM_BOT_TOKEN manquant dans .env");
 }
 
-export class AutoTrader {
-  private ws: WebSocket | null = null;
-  private watches = new Map<string, TokenWatch>();
-  private evalIntervals = new Map<string, NodeJS.Timeout>();
-  private peakMarketCaps = new Map<string, number>();
-  private positionPollInterval: NodeJS.Timeout | null = null;
-  private notify: (msg: string) => void;
+const allowedIds = (process.env.ALLOWED_TELEGRAM_IDS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map(Number);
 
-  constructor(
-    private telegramId: number,
-    private connection: Connection,
-    private signer: Keypair,
-    private params: StrategyParams,
-    notifyFn: (msg: string) => void
-  ) {
-    this.notify = notifyFn;
+const bot = new Telegraf(BOT_TOKEN);
+const connection = new Connection(RPC_ENDPOINT, "confirmed");
+
+const paramsByUser = new Map<number, StrategyParams>();
+const autoTraderByUser = new Map<number, AutoTrader>();
+
+function getParams(telegramId: number): StrategyParams {
+  if (!paramsByUser.has(telegramId)) {
+    paramsByUser.set(telegramId, { ...defaultParams });
+  }
+  return paramsByUser.get(telegramId)!;
+}
+
+function isAllowed(telegramId: number): boolean {
+  if (allowedIds.length === 0) return true;
+  return allowedIds.includes(telegramId);
+}
+
+bot.use((ctx, next) => {
+  const id = ctx.from?.id;
+  if (!id || !isAllowed(id)) {
+    ctx.reply("⛔ Tu n'es pas autorisé à utiliser ce bot.");
+    return;
+  }
+  return next();
+});
+
+bot.start((ctx) => {
+  ctx.reply(
+    [
+      "👋 Bienvenue sur ton bot de trading pump.fun !",
+      "",
+      "⚠️ Mode PAPER (simulation) actif par défaut — aucune transaction réelle tant que /live n'est pas activé explicitement.",
+      "",
+      "Commandes principales :",
+      "/wallet — voir ou créer ton wallet",
+      "/balance — voir ton solde SOL",
+      "/withdraw <adresse> <montant|all> — retirer du SOL vers une autre adresse",
+      "/exportkey — exporter la clé privée (Phantom, Backpack...)",
+      "/buy <mint> <montant_sol> — acheter manuellement",
+      "/sell <mint> <pourcentage|montant> — vendre manuellement",
+      "/autotrade on|off — activer/désactiver le scanner automatique",
+      "/dashboard — statistiques en temps réel",
+      "/config — voir/régler tous les paramètres de stratégie",
+      "/set <clé> <valeur> — modifier un paramètre",
+      "/openpositions — positions ouvertes",
+      "/pnl — gain/perte des positions ouvertes",
+      "/rejected — derniers tokens rejetés et pourquoi",
+      "/live on|off — activer/désactiver le trading RÉEL (danger)",
+    ].join("\n")
+  );
+});
+
+bot.command("wallet", (ctx) => {
+  const wallet = getOrCreateWallet(ctx.from.id);
+  ctx.reply(`🔑 Ton adresse wallet :\n${wallet.publicKey}\n\nDépose du SOL dessus pour trader en live.`);
+});
+
+bot.command("balance", async (ctx) => {
+  const wallet = getOrCreateWallet(ctx.from.id);
+  try {
+    const lamports = await connection.getBalance(new PublicKey(wallet.publicKey));
+    ctx.reply(`💰 Solde réel : ${(lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
+  } catch (err) {
+    ctx.reply(`Erreur : ${(err as Error).message}`);
+  }
+});
+
+bot.command("exportkey", (ctx) => {
+  const wallet = getOrCreateWallet(ctx.from.id);
+  const privateKey = exportPrivateKeyBase58(wallet);
+  ctx.reply(
+    [
+      "🔑 Voici la clé privée de ton wallet (format base58, importable dans Phantom, Backpack, etc.) :",
+      "",
+      privateKey,
+      "",
+      "⚠️ ATTENTION :",
+      "— Quiconque a cette clé a un contrôle TOTAL sur ce wallet, y compris tous les fonds dessus.",
+      "— Ne la partage jamais, ne la colle nulle part d'autre qu'une appli wallet de confiance.",
+      "— Supprime ce message une fois la clé copiée en lieu sûr.",
+      "— Si tu penses qu'elle a fuité, transfère immédiatement tes fonds vers un nouveau wallet.",
+    ].join("\n")
+  );
+});
+
+bot.command("withdraw", async (ctx) => {
+  const [, address, amountStr] = ctx.message.text.split(" ").filter(Boolean);
+
+  if (!address || !amountStr) {
+    ctx.reply("Usage : /withdraw <adresse_solana> <montant_en_sol|all>");
+    return;
   }
 
-  start(): void {
-    if (this.ws) return;
-    this.ws = new WebSocket(PUMPPORTAL_WS);
+  const wallet = getOrCreateWallet(ctx.from.id);
+  const signer = loadKeypair(wallet);
 
-    this.ws.on("open", () => {
-      this.ws?.send(JSON.stringify({ method: "subscribeNewToken" }));
-      const mode = this.params.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)";
-      this.notify(`🟢 Auto-trading démarré — mode ${mode} (bonding curve on-chain + DexScreener)`);
-    });
+  try {
+    let amountSol: number;
 
-    this.ws.on("message", (raw) => this.handleMessage(raw.toString()));
-    this.ws.on("error", (err) => this.notify(`⚠️ Erreur WebSocket : ${err.message}`));
-    this.ws.on("close", () => {
-      this.notify("🔴 Connexion perdue, reconnexion dans 5s...");
-      this.ws = null;
-      setTimeout(() => this.start(), 5000);
-    });
+    if (amountStr.toLowerCase() === "all") {
+      const params = getParams(ctx.from.id);
+      const balanceLamports = await connection.getBalance(signer.publicKey);
+      const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
+      const networkFeeBuffer = 0.001; // marge pour les frais de transaction
+      amountSol = balanceSol - params.reserveSolBalance - networkFeeBuffer;
 
-    this.positionPollInterval = setInterval(() => this.pollAllPositions(), POSITION_POLL_INTERVAL_MS);
-  }
-
-  stop(): void {
-    this.evalIntervals.forEach((t) => clearInterval(t));
-    this.evalIntervals.clear();
-    if (this.positionPollInterval) clearInterval(this.positionPollInterval);
-    this.positionPollInterval = null;
-    this.ws?.close();
-    this.ws = null;
-    this.notify("⏹️ Auto-trading arrêté.");
-  }
-
-  private handleMessage(raw: string): void {
-    let data: any;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    if (data.txType === "create" && data.mint) {
-      this.beginWatching(data.mint, data.name ?? "?", data.symbol ?? "?", data.bondingCurveKey ?? null);
-    }
-  }
-
-  private beginWatching(mint: string, name: string, symbol: string, bondingCurveKey: string | null): void {
-    const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
-    state.tokensScanned += 1;
-    saveBotState(this.telegramId, state);
-
-    const watch = createTokenWatch(mint, name, symbol, bondingCurveKey, Date.now());
-    this.watches.set(mint, watch);
-
-    const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
-    this.evalIntervals.set(mint, interval);
-    setTimeout(() => this.evaluateWatch(mint), 3_000);
-
-    setTimeout(() => this.finalizeWatchIfExpired(mint), (this.params.maxAgeMinutes * 60 + 30) * 1000);
-  }
-
-  /** Lit le market cap : priorité au compte on-chain de la bonding curve, sinon DexScreener après migration. */
-  private async readMarketCap(mint: string, bondingCurveKey: string | null): Promise<MarketCapReading | null> {
-    const solPriceUsd = await getSolPriceUsd();
-
-    if (bondingCurveKey) {
-      const onChain = await fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd);
-      if (onChain && !onChain.complete) {
-        return { marketCapUsd: onChain.marketCapUsd, hasTradeCounts: false, realSolReserves: onChain.realSolReserves };
-      }
-      // Si complete=true (gradué) ou lecture on-chain indisponible, on tente DexScreener en repli
-    }
-
-    const dex = await fetchDexScreenerData(mint);
-    if (dex && dex.marketCapUsd > 0) {
-      return { marketCapUsd: dex.marketCapUsd, hasTradeCounts: true, realSolReserves: 0 };
-    }
-
-    return null;
-  }
-
-  private async evaluateWatch(mint: string): Promise<void> {
-    const watch = this.watches.get(mint);
-    if (!watch || watch.decided) return;
-
-    const reading = await this.readMarketCap(mint, watch.bondingCurveKey);
-    if (!reading) return; // pas encore de donnée exploitable, on réessaiera au prochain cycle
-
-    if (reading.hasTradeCounts) {
-      const dex = await fetchDexScreenerData(mint);
-      if (dex) {
-        watch.lastLiquidityUsd = dex.liquidityUsd;
-        watch.lastBuys5m = dex.buys5m;
-        watch.lastSells5m = dex.sells5m;
-      }
-    }
-
-    watch.mcHistory.push({ t: Date.now(), marketCapUsd: reading.marketCapUsd });
-    if (watch.mcHistory.length > 30) watch.mcHistory.shift();
-    watch.lastRealSolReserves = reading.realSolReserves;
-
-    const hardFilter = passesHardFilters(watch, reading.marketCapUsd, this.params);
-    if (!hardFilter.ok) {
-      if (hardFilter.reason === "trop jeune") return;
-      this.rejectWatch(mint, hardFilter.reason!, 0);
-      return;
-    }
-
-    const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
-    if (score.total < this.params.minEntryScore) return;
-
-    await this.tryEnter(mint, watch.name, watch.symbol, watch.bondingCurveKey, reading.marketCapUsd, score.total);
-  }
-
-  private finalizeWatchIfExpired(mint: string): void {
-    const watch = this.watches.get(mint);
-    if (!watch || watch.decided) return;
-    this.rejectWatch(mint, "fenêtre d'observation expirée sans setup validé", 0);
-  }
-
-  private rejectWatch(mint: string, reason: string, score: number): void {
-    const watch = this.watches.get(mint);
-    if (watch) watch.decided = true;
-
-    const interval = this.evalIntervals.get(mint);
-    if (interval) clearInterval(interval);
-    this.evalIntervals.delete(mint);
-
-    const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
-    state.tokensRejected += 1;
-    saveBotState(this.telegramId, state);
-    logRejectedToken({ telegramId: this.telegramId, mint, reason, score, timestamp: new Date().toISOString() });
-
-    this.watches.delete(mint);
-  }
-
-  private async tryEnter(
-    mint: string,
-    name: string,
-    symbol: string,
-    bondingCurveKey: string | null,
-    marketCapUsd: number,
-    score: number
-  ): Promise<void> {
-    const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
-    const solPriceUsd = await getSolPriceUsd();
-
-    const today = new Date().toISOString().slice(0, 10);
-    if (state.dailyDate !== today) {
-      state.dailyDate = today;
-      state.dailyStartCapitalUsd = this.params.liveTrading
-        ? await this.getRealCapitalUsd(solPriceUsd)
-        : state.paperCapitalUsd;
-    }
-
-    const currentCapitalUsd = this.params.liveTrading
-      ? await this.getRealCapitalUsd(solPriceUsd)
-      : state.paperCapitalUsd;
-    const dailyPnlPercent = ((currentCapitalUsd - state.dailyStartCapitalUsd) / state.dailyStartCapitalUsd) * 100;
-    if (dailyPnlPercent <= -this.params.maxDailyLossPercent) {
-      this.rejectWatch(mint, "limite de perte quotidienne atteinte — trading en pause pour aujourd'hui", score);
-      return;
-    }
-
-    if (state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
-      if (score < this.params.minScoreAfterPause) {
-        this.rejectWatch(mint, `bot en pause après pertes consécutives (jusqu'à ${state.pausedUntil})`, score);
+      if (amountSol <= 0) {
+        ctx.reply(
+          `Solde insuffisant pour retirer quoi que ce soit après la réserve de sécurité (${params.reserveSolBalance} SOL) et les frais réseau.`
+        );
         return;
       }
-      this.notify(`⚡ Score exceptionnel (${score}/100) pendant la pause — entrée exceptionnelle autorisée`);
-    }
-
-    const openPositions = getOpenPositions(this.telegramId);
-    if (openPositions.length >= this.params.maxOpenPositions) {
-      this.rejectWatch(mint, "nombre maximum de positions déjà atteint", score);
-      return;
-    }
-
-    const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
-    saveBotState(this.telegramId, state);
-
-    try {
-      let signature: string;
-      if (this.params.liveTrading) {
-        const positionSizeSol = positionSizeUsd / solPriceUsd;
-
-        const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
-        const balanceSol = balanceLamports / 1_000_000_000;
-        if (balanceSol - positionSizeSol - this.params.priorityFeeSol - 0.001 < this.params.reserveSolBalance) {
-          this.rejectWatch(mint, "solde insuffisant pour garder la réserve de sécurité", score);
-          return;
-        }
-
-        this.notify(`🎯 [LIVE] Score ${score}/100 sur ${symbol} (${name})... — achat de ${positionSizeSol.toFixed(4)} SOL`);
-        signature = await executeTrade(this.connection, this.signer, {
-          action: "buy",
-          mint,
-          amount: positionSizeSol,
-          denominatedInSol: true,
-          slippagePercent: this.params.maxSlippagePercent,
-          priorityFeeSol: this.params.priorityFeeSol,
-        });
-      } else {
-        simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd);
-        signature = `PAPER-${Date.now()}`;
-        this.notify(`🎯 [PAPER] Score ${score}/100 sur ${symbol} (${name})... — achat simulé de $${positionSizeUsd.toFixed(2)}`);
+    } else {
+      amountSol = Number(amountStr);
+      if (Number.isNaN(amountSol) || amountSol <= 0) {
+        ctx.reply("Le montant doit être un nombre positif, ou 'all'.");
+        return;
       }
+    }
 
-      const position: OpenPosition = {
-        telegramId: this.telegramId,
-        mint,
-        name,
-        symbol,
-        bondingCurveKey,
-        entryMarketCapUsd: marketCapUsd,
-        lastKnownMarketCapUsd: marketCapUsd,
-        lastUpdatedAt: new Date().toISOString(),
-        positionSizeUsd,
-        remainingPercent: 100,
-        takeProfitLevelsHit: [],
-        openedAt: new Date().toISOString(),
-      };
-      saveOpenPosition(position);
+    await ctx.reply(`⏳ Envoi de ${amountSol.toFixed(4)} SOL vers ${address}...`);
+    const signature = await sendSol(connection, signer, address, amountSol);
+    ctx.reply(`✅ Retrait effectué !\nhttps://solscan.io/tx/${signature}`);
+  } catch (err) {
+    ctx.reply(`❌ Échec du retrait : ${(err as Error).message}`);
+  }
+});
 
-      logTrade({
-        telegramId: this.telegramId,
-        action: "buy",
-        mint,
-        amountSol: this.params.liveTrading ? positionSizeUsd / solPriceUsd : 0,
-        signature,
-        timestamp: new Date().toISOString(),
+bot.command("buy", async (ctx) => {
+  const [, mint, amountStr] = ctx.message.text.split(" ").filter(Boolean);
+  if (!mint || !amountStr) {
+    ctx.reply("Usage : /buy <adresse_du_token> <montant_en_SOL>");
+    return;
+  }
+  const amountSol = Number(amountStr);
+  if (Number.isNaN(amountSol) || amountSol <= 0) {
+    ctx.reply("Le montant doit être un nombre positif.");
+    return;
+  }
+  const wallet = getOrCreateWallet(ctx.from.id);
+  const signer = loadKeypair(wallet);
+  try {
+    await ctx.reply(`⏳ Achat de ${amountSol} SOL sur ${mint} en cours...`);
+    const signature = await executeTrade(connection, signer, {
+      action: "buy",
+      mint,
+      amount: amountSol,
+      denominatedInSol: true,
+    });
+    ctx.reply(`✅ Achat exécuté !\nhttps://solscan.io/tx/${signature}`);
+  } catch (err) {
+    ctx.reply(`❌ Échec de l'achat : ${(err as Error).message}`);
+  }
+});
+
+bot.command("sell", async (ctx) => {
+  const [, mint, amountStr] = ctx.message.text.split(" ").filter(Boolean);
+  if (!mint || !amountStr) {
+    ctx.reply("Usage : /sell <adresse_du_token> <pourcentage_ou_montant>");
+    return;
+  }
+  const wallet = getOrCreateWallet(ctx.from.id);
+  const signer = loadKeypair(wallet);
+  const isPercent = amountStr.trim().endsWith("%");
+  try {
+    await ctx.reply(`⏳ Vente de ${amountStr} sur ${mint} en cours...`);
+    const result = await sellWithFallback(
+      connection,
+      signer,
+      mint,
+      isPercent ? amountStr : Number(amountStr),
+      15,
+      0.0005
+    );
+    const fallbackNote = result.usedFallback ? " (via Jupiter, PumpPortal a échoué)" : "";
+    ctx.reply(`✅ Vente exécutée !${fallbackNote}\nhttps://solscan.io/tx/${result.signature}`);
+  } catch (err) {
+    ctx.reply(`❌ Échec de la vente (PumpPortal et Jupiter ont tous les deux échoué) : ${(err as Error).message}`);
+  }
+});
+
+bot.command("config", (ctx) => {
+  const p = getParams(ctx.from.id);
+  const lines = [
+    `Mode : ${p.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)"}`,
+    `Capital de départ : $${p.startingCapitalUsd} — Position : ${p.positionPercent}% du capital`,
+    `Positions max : ${p.maxOpenPositions}`,
+    `Âge accepté : ${p.minAgeMinutes}-${p.maxAgeMinutes} min`,
+    `Market cap accepté : $${p.minMarketCapUsd}-$${p.maxMarketCapUsd}`,
+    `Score minimum pour entrer : ${p.minEntryScore}/100`,
+    `Stop-loss : ${p.stopLossPercent}%`,
+    `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}%`,
+    `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,
+    `Perte quotidienne max : ${p.maxDailyLossPercent}%`,
+    `Pause après ${p.consecutiveLossesForPause} pertes consécutives, ${p.pauseDurationMinutes} min (reprise si score ≥ ${p.minScoreAfterPause})`,
+    `Slippage max : ${p.maxSlippagePercent}% — Priority fee : ${p.priorityFeeSol} SOL — Réserve : ${p.reserveSolBalance} SOL`,
+    "",
+    "Modifier : /set <clé> <valeur>",
+    `Clés numériques : ${numericParamKeys.join(", ")}`,
+    `Clés on/off : ${booleanParamKeys.join(", ")} (via /live et le mode paper)`,
+  ];
+  ctx.reply(lines.join("\n"));
+});
+
+bot.command("set", (ctx) => {
+  const [, key, valueStr] = ctx.message.text.split(" ").filter(Boolean);
+  const p = getParams(ctx.from.id);
+
+  if (!key || !valueStr || !numericParamKeys.includes(key as keyof StrategyParams)) {
+    ctx.reply(`Usage : /set <clé> <valeur>\nClés valides : ${numericParamKeys.join(", ")}`);
+    return;
+  }
+  const value = Number(valueStr);
+  if (Number.isNaN(value)) {
+    ctx.reply("La valeur doit être un nombre.");
+    return;
+  }
+  (p as any)[key] = value;
+  ctx.reply(`✅ ${key} = ${value}`);
+});
+
+bot.command("live", (ctx) => {
+  const [, mode] = ctx.message.text.split(" ").filter(Boolean);
+  const p = getParams(ctx.from.id);
+
+  if (mode === "on") {
+    p.liveTrading = true;
+    p.paperMode = false;
+    ctx.reply(
+      "🔴 MODE LIVE ACTIVÉ — le bot va maintenant utiliser de vrais fonds sur ton wallet. Assure-toi d'avoir testé la stratégie en paper trading et d'être à l'aise avec les paramètres actuels (/config)."
+    );
+  } else if (mode === "off") {
+    p.liveTrading = false;
+    p.paperMode = true;
+    ctx.reply("📝 Retour en mode PAPER (simulation, aucun fonds réel utilisé).");
+  } else {
+    ctx.reply(`Usage : /live on  ou  /live off\nMode actuel : ${p.liveTrading ? "LIVE" : "PAPER"}`);
+  }
+});
+
+bot.command("autotrade", (ctx) => {
+  const [, mode] = ctx.message.text.split(" ").filter(Boolean);
+  if (mode !== "on" && mode !== "off") {
+    ctx.reply("Usage : /autotrade on  ou  /autotrade off");
+    return;
+  }
+
+  const telegramId = ctx.from.id;
+  const params = getParams(telegramId);
+
+  if (mode === "on") {
+    const wallet = getOrCreateWallet(telegramId);
+    const signer = loadKeypair(wallet);
+
+    let trader = autoTraderByUser.get(telegramId);
+    if (!trader) {
+      trader = new AutoTrader(telegramId, connection, signer, params, (msg) => {
+        ctx.telegram.sendMessage(telegramId, msg).catch(() => {});
       });
-
-      const watchObj = this.watches.get(mint);
-      if (watchObj) watchObj.decided = true;
-      const interval = this.evalIntervals.get(mint);
-      if (interval) clearInterval(interval);
-      this.evalIntervals.delete(mint);
-
-      this.notify(
-        `✅ Position ouverte sur ${symbol} (${name}) — entrée à $${marketCapUsd.toFixed(0)} de market cap${
-          this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
-        }`
-      );
-    } catch (err) {
-      this.notify(`❌ Échec de l'entrée sur ${symbol} (${name})... : ${(err as Error).message}`);
+      autoTraderByUser.set(telegramId, trader);
     }
+    trader.start();
+    ctx.reply(`🟢 Auto-trading activé en mode ${params.liveTrading ? "LIVE" : "PAPER"}.`);
+  } else {
+    autoTraderByUser.get(telegramId)?.stop();
+    ctx.reply("🔴 Auto-trading désactivé.");
+  }
+});
+
+bot.command("openpositions", (ctx) => {
+  const positions = getOpenPositions(ctx.from.id);
+  if (positions.length === 0) {
+    ctx.reply("Aucune position ouverte.");
+    return;
+  }
+  const lines = positions.map(
+    (p) =>
+      `${p.symbol} (${p.name})\n${p.mint}\nEntrée à $${p.entryMarketCapUsd.toFixed(0)} de market cap — reste ${p.remainingPercent}% — ouvert le ${new Date(p.openedAt).toLocaleString("fr-FR")}`
+  );
+  ctx.reply(lines.join("\n\n"));
+});
+
+bot.command("pnl", (ctx) => {
+  const positions = getOpenPositions(ctx.from.id);
+  if (positions.length === 0) {
+    ctx.reply("Aucune position ouverte.");
+    return;
+  }
+  const lines = positions.map((p) => {
+    if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) return `${p.symbol} (${p.name}) — PnL inconnu`;
+    const gainPercent = ((p.lastKnownMarketCapUsd - p.entryMarketCapUsd) / p.entryMarketCapUsd) * 100;
+    const emoji = gainPercent >= 0 ? "🟢" : "🔴";
+    return `${emoji} ${p.symbol} (${p.name}) — ${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}% — entrée $${p.entryMarketCapUsd.toFixed(0)} → actuel $${p.lastKnownMarketCapUsd.toFixed(0)} — reste ${p.remainingPercent}%`;
+  });
+  ctx.reply(["📊 PnL des positions ouvertes :", "", ...lines].join("\n"));
+});
+
+bot.command("rejected", (ctx) => {
+  const rejected = getRejectedTokens(ctx.from.id, 15);
+  if (rejected.length === 0) {
+    ctx.reply("Aucun rejet enregistré pour l'instant.");
+    return;
+  }
+  const lines = rejected
+    .slice()
+    .reverse()
+    .map((r) => `${r.mint.slice(0, 8)}... — ${r.reason}${r.score ? ` (score ${r.score}/100)` : ""}`);
+  ctx.reply(["🚫 Derniers tokens rejetés :", "", ...lines].join("\n"));
+});
+
+bot.command("dashboard", (ctx) => {
+  const telegramId = ctx.from.id;
+  const params = getParams(telegramId);
+  const state = getBotState(telegramId, params.startingCapitalUsd);
+  const closedTrades = getClosedTrades(telegramId);
+  const openPositions = getOpenPositions(telegramId);
+
+  const wins = closedTrades.filter((t) => t.pnlUsd > 0);
+  const losses = closedTrades.filter((t) => t.pnlUsd <= 0);
+  const winRate = closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0;
+  const avgProfit = wins.length > 0 ? wins.reduce((s, t) => s + t.pnlUsd, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnlUsd, 0) / losses.length : 0;
+  const totalPnl = closedTrades.reduce((s, t) => s + t.pnlUsd, 0);
+
+  let peak = params.startingCapitalUsd;
+  let runningCapital = params.startingCapitalUsd;
+  let maxDrawdownPercent = 0;
+  for (const t of closedTrades) {
+    runningCapital += t.pnlUsd;
+    peak = Math.max(peak, runningCapital);
+    const drawdown = ((peak - runningCapital) / peak) * 100;
+    maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdown);
   }
 
-  private async getRealCapitalUsd(solPriceUsd: number): Promise<number> {
-    const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
-    return (balanceLamports / 1_000_000_000) * solPriceUsd;
-  }
+  ctx.reply(
+    [
+      `📊 DASHBOARD — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
+      "",
+      `Capital simulé : $${state.paperCapitalUsd.toFixed(2)}`,
+      `PnL total : ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`,
+      `Positions ouvertes : ${openPositions.length}/${params.maxOpenPositions}`,
+      `Trades clôturés : ${closedTrades.length} — Win rate : ${winRate.toFixed(0)}%`,
+      `Gain moyen : +$${avgProfit.toFixed(2)} — Perte moyenne : $${avgLoss.toFixed(2)}`,
+      `Max drawdown : -${maxDrawdownPercent.toFixed(1)}%`,
+      `Tokens scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
+      `Pertes consécutives actuelles : ${state.consecutiveLosses}`,
+      state.pausedUntil ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}` : "▶️ Actif",
+    ].join("\n")
+  );
+});
 
-  private async pollAllPositions(): Promise<void> {
-    const positions = getOpenPositions(this.telegramId);
-    for (const position of positions) {
-      const reading = await this.readMarketCap(position.mint, position.bondingCurveKey);
-      if (!reading) continue;
-      await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
-    }
-  }
+async function startBot(): Promise<void> {
+  // Nettoie toute session de longue durée (long-polling) restée ouverte côté Telegram —
+  // utile après avoir testé le bot sur un autre hébergement (Replit) précédemment.
+  await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+  console.log("Webhook nettoyé, updates en attente supprimées.");
 
-  private async updatePositionAndCheckExit(position: OpenPosition, currentMarketCapUsd: number): Promise<void> {
-    if (position.entryMarketCapUsd <= 0) return;
-
-    position.lastKnownMarketCapUsd = currentMarketCapUsd;
-    position.lastUpdatedAt = new Date().toISOString();
-
-    const gainPercent = ((currentMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100;
-
-    if (gainPercent <= this.params.stopLossPercent) {
-      await this.exitPosition(position, 100, gainPercent, `🛑 Stop-loss déclenché (${gainPercent.toFixed(1)}%)`);
-      return;
-    }
-
-    const levels = [
-      { key: "TP1", gain: this.params.tp1Percent, sell: this.params.tp1SellPercent },
-      { key: "TP2", gain: this.params.tp2Percent, sell: this.params.tp2SellPercent },
-      { key: "TP3", gain: this.params.tp3Percent, sell: this.params.tp3SellPercent },
-    ];
-
-    for (const level of levels) {
-      if (!position.takeProfitLevelsHit.includes(level.gain) && gainPercent >= level.gain) {
-        position.takeProfitLevelsHit.push(level.gain);
-        await this.exitPosition(position, level.sell, gainPercent, `🎉 ${level.key} +${level.gain}% atteint`);
-      }
-    }
-
-    if (position.takeProfitLevelsHit.includes(this.params.tp3Percent) && position.remainingPercent > 0) {
-      const peak = Math.max(this.peakMarketCaps.get(position.mint) ?? currentMarketCapUsd, currentMarketCapUsd);
-      this.peakMarketCaps.set(position.mint, peak);
-      const dropFromPeakPercent = ((peak - currentMarketCapUsd) / peak) * 100;
-      if (dropFromPeakPercent >= this.params.trailingStopPercent) {
-        await this.exitPosition(
-          position,
-          100,
-          gainPercent,
-          `📉 Trailing stop déclenché (-${dropFromPeakPercent.toFixed(1)}% depuis le plus haut)`
-        );
-      }
-    }
-
-    saveOpenPosition(position);
-  }
-
-  private async exitPosition(
-    position: OpenPosition,
-    sellPercent: number,
-    gainPercent: number,
-    reason: string
-  ): Promise<void> {
-    try {
-      this.notify(`${reason} sur ${position.symbol} (${position.name})`);
-      let signature: string;
-
-      if (this.params.liveTrading) {
-        const result = await sellWithFallback(
-          this.connection,
-          this.signer,
-          position.mint,
-          `${sellPercent}%`,
-          this.params.maxSlippagePercent,
-          this.params.priorityFeeSol
-        );
-        signature = result.signature;
-        if (result.usedFallback) {
-          this.notify(`ℹ️ Vendu via Jupiter (PumpPortal n'a pas pu traiter ce token, probablement gradué)`);
-        }
-      } else {
-        const usdReceived = position.positionSizeUsd * (sellPercent / 100) * (1 + gainPercent / 100);
-        simulateSell(this.telegramId, position.mint, usdReceived);
-        signature = `PAPER-${Date.now()}`;
-      }
-
-      logTrade({
-        telegramId: this.telegramId,
-        action: "sell",
-        mint: position.mint,
-        signature,
-        timestamp: new Date().toISOString(),
-      });
-
-      const pnlUsdForSlice = position.positionSizeUsd * (sellPercent / 100) * (gainPercent / 100);
-      logClosedTrade({
-        telegramId: this.telegramId,
-        mint: position.mint,
-        pnlUsd: pnlUsdForSlice,
-        pnlPercent: gainPercent,
-        wasPaper: !this.params.liveTrading,
-        closedAt: new Date().toISOString(),
-      });
-
-      if (sellPercent === 100) {
-        const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
-        if (gainPercent < 0) {
-          state.consecutiveLosses += 1;
-          if (state.consecutiveLosses >= this.params.consecutiveLossesForPause) {
-            state.pausedUntil = new Date(Date.now() + this.params.pauseDurationMinutes * 60_000).toISOString();
-            this.notify(`⏸️ ${state.consecutiveLosses} pertes consécutives — pause de ${this.params.pauseDurationMinutes} min`);
-          }
-        } else {
-          state.consecutiveLosses = 0;
-          state.pausedUntil = null;
-        }
-        saveBotState(this.telegramId, state);
-      }
-
-      position.remainingPercent -= sellPercent;
-      if (position.remainingPercent <= 0) {
-        closePosition(this.telegramId, position.mint);
-        this.peakMarketCaps.delete(position.mint);
-      } else {
-        saveOpenPosition(position);
-      }
-
-      this.notify(
-        `✅ Vente exécutée (${sellPercent}% de la position).${
-          this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
-        }`
-      );
-    } catch (err) {
-      this.notify(`❌ Échec de la vente sur ${position.symbol} (${position.name})... : ${(err as Error).message}`);
-    }
-  }
+  await bot.launch();
+  console.log("Bot pump.fun démarré.");
 }
+
+startBot().catch((err) => {
+  console.error("❌ Échec critique au démarrage du bot :", err);
+  process.exit(1);
+});
+
+import http from "http";
+const PORT = process.env.PORT || 3000;
+http
+  .createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Bot pump.fun en ligne.");
+  })
+  .listen(PORT, () => console.log(`Serveur ping actif sur le port ${PORT}`));
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
