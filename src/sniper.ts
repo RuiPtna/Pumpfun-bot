@@ -7,6 +7,7 @@ import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./s
 import { fetchDexScreenerData } from "./dexscreener";
 import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
+import { fetchHolderConcentration } from "./holderAnalysis";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
   logTrade,
@@ -226,6 +227,31 @@ export class AutoTrader {
     if (isPerfectScore && openPositions.length >= this.params.maxOpenPositions) {
       this.notify(`🌟 Score parfait (100/100) sur ${symbol} — entrée au-delà de la limite de positions habituelle`);
     }
+
+    // Vérification de la concentration des holders — gratuite via RPC, mais on ne l'appelle
+    // qu'ici (juste avant l'achat) plutôt qu'à chaque cycle d'évaluation, pour limiter le nombre
+    // d'appels RPC aux seuls candidats qui ont déjà passé le score.
+    const holderData = await fetchHolderConcentration(this.connection, mint);
+    if (holderData) {
+      if (holderData.topHolderPercent > this.params.maxTopHolderPercent) {
+        this.rejectWatch(
+          mint,
+          `plus gros holder détient ${holderData.topHolderPercent.toFixed(0)}% (max ${this.params.maxTopHolderPercent}%)`,
+          score
+        );
+        return;
+      }
+      if (holderData.top10Percent > this.params.maxTop10HolderPercent) {
+        this.rejectWatch(
+          mint,
+          `top 10 holders détiennent ${holderData.top10Percent.toFixed(0)}% (max ${this.params.maxTop10HolderPercent}%)`,
+          score
+        );
+        return;
+      }
+    }
+    // Si la donnée n'est pas disponible (RPC lent, etc.), on ne bloque pas l'achat pour autant —
+    // mieux vaut un candidat non vérifié sur ce point précis qu'un bot qui n'achète plus jamais rien.
 
     const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
     saveBotState(this.telegramId, state);

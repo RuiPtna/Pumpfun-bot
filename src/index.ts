@@ -50,6 +50,23 @@ function isAllowed(telegramId: number): boolean {
   return allowedIds.includes(telegramId);
 }
 
+/**
+ * Édite le message existant plutôt que d'en renvoyer un nouveau. Si Telegram refuse
+ * car le contenu est identique au précédent (aucun changement, ex. prix pas encore bougé),
+ * on ne fait rien silencieusement — pas besoin de spammer un nouveau message pour ça.
+ * On ne retombe sur un nouveau message que si l'édition échoue pour une autre raison
+ * (message trop vieux, supprimé, etc.).
+ */
+async function editOrReply(ctx: any, text: string, keyboard: ReturnType<typeof Markup.inlineKeyboard>): Promise<void> {
+  try {
+    await ctx.editMessageText(text, keyboard);
+  } catch (err) {
+    const message = (err as Error).message || "";
+    if (message.includes("message is not modified")) return;
+    await ctx.reply(text, keyboard);
+  }
+}
+
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("📊 PnL", "menu_pnl"), Markup.button.callback("📂 Positions", "menu_positions")],
@@ -245,6 +262,7 @@ function formatConfig(telegramId: number): string {
     `Âge accepté : ${p.minAgeMinutes}-${p.maxAgeMinutes} min`,
     `Market cap accepté : $${p.minMarketCapUsd}-$${p.maxMarketCapUsd}`,
     `Score minimum pour entrer : ${p.minEntryScore}/100`,
+    `Concentration holders max : plus gros holder ${p.maxTopHolderPercent}%, top 10 ${p.maxTop10HolderPercent}%`,
     `Stop-loss : ${p.stopLossPercent}%`,
     `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}%`,
     `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,
@@ -525,20 +543,12 @@ bot.action("start_reset_paper", async (ctx) => {
 bot.action("confirm_reset_paper", async (ctx) => {
   await ctx.answerCbQuery();
   const result = resetPaperData(ctx.from!.id);
-  try {
-    await ctx.editMessageText(result, mainMenuKeyboard());
-  } catch {
-    ctx.reply(result, mainMenuKeyboard());
-  }
+  await editOrReply(ctx, result, mainMenuKeyboard());
 });
 
 bot.action("cancel_reset_paper", async (ctx) => {
   await ctx.answerCbQuery();
-  try {
-    await ctx.editMessageText("Réinitialisation annulée.", mainMenuKeyboard());
-  } catch {
-    ctx.reply("Réinitialisation annulée.", mainMenuKeyboard());
-  }
+  await editOrReply(ctx, "Réinitialisation annulée.", mainMenuKeyboard());
 });
 
 bot.command("dashboard", (ctx) => {
@@ -550,12 +560,7 @@ bot.action("menu_pnl", async (ctx) => {
   await ctx.answerCbQuery();
   const telegramId = ctx.from!.id;
   const text = formatPnl(telegramId);
-  try {
-    await ctx.editMessageText(text, pnlKeyboard(telegramId));
-  } catch {
-    // Le message ne peut pas être édité (trop vieux, ou contenu identique) — on en renvoie un nouveau
-    ctx.reply(text, pnlKeyboard(telegramId));
-  }
+  await editOrReply(ctx, text, pnlKeyboard(telegramId));
 });
 
 bot.action(/^sell_(.+)$/, async (ctx) => {
@@ -578,11 +583,7 @@ bot.action(/^sell_(.+)$/, async (ctx) => {
 
   // Rafraîchit l'affichage du PnL pour refléter la position fermée
   const text = formatPnl(telegramId);
-  try {
-    await ctx.editMessageText(text, pnlKeyboard(telegramId));
-  } catch {
-    ctx.reply(text, pnlKeyboard(telegramId));
-  }
+  await editOrReply(ctx, text, pnlKeyboard(telegramId));
 });
 bot.action("menu_positions", async (ctx) => {
   await ctx.answerCbQuery();
@@ -591,11 +592,7 @@ bot.action("menu_positions", async (ctx) => {
 bot.action("menu_balance", async (ctx) => {
   await ctx.answerCbQuery();
   const text = await formatBalance(ctx.from!.id);
-  try {
-    await ctx.editMessageText(text, balanceKeyboard());
-  } catch {
-    ctx.reply(text, balanceKeyboard());
-  }
+  await editOrReply(ctx, text, balanceKeyboard());
 });
 
 bot.action("wallet_deposit", async (ctx) => {
@@ -612,20 +609,12 @@ bot.action("wallet_withdraw_start", async (ctx) => {
 bot.action("menu_dashboard", async (ctx) => {
   await ctx.answerCbQuery();
   const text = formatDashboard(ctx.from!.id);
-  try {
-    await ctx.editMessageText(text, dashboardKeyboard());
-  } catch {
-    ctx.reply(text, dashboardKeyboard());
-  }
+  await editOrReply(ctx, text, dashboardKeyboard());
 });
 
 bot.action("menu_home", async (ctx) => {
   await ctx.answerCbQuery();
-  try {
-    await ctx.editMessageText("Menu principal :", mainMenuKeyboard());
-  } catch {
-    ctx.reply("Menu principal :", mainMenuKeyboard());
-  }
+  await editOrReply(ctx, "Menu principal :", mainMenuKeyboard());
 });
 bot.action("menu_rejected", async (ctx) => {
   await ctx.answerCbQuery();
