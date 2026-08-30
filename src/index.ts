@@ -1,8 +1,9 @@
 import "dotenv/config";
 import { Telegraf } from "telegraf";
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { getOrCreateWallet, loadKeypair } from "./wallet";
+import { getOrCreateWallet, loadKeypair, exportPrivateKeyBase58 } from "./wallet";
 import { executeTrade } from "./trade";
+import { sendSol } from "./transfer";
 import {
   getTrades,
   getOpenPositions,
@@ -63,6 +64,8 @@ bot.start((ctx) => {
       "Commandes principales :",
       "/wallet — voir ou créer ton wallet",
       "/balance — voir ton solde SOL",
+      "/withdraw <adresse> <montant|all> — retirer du SOL vers une autre adresse",
+      "/exportkey — exporter la clé privée (Phantom, Backpack...)",
       "/buy <mint> <montant_sol> — acheter manuellement",
       "/sell <mint> <pourcentage|montant> — vendre manuellement",
       "/autotrade on|off — activer/désactiver le scanner automatique",
@@ -89,6 +92,67 @@ bot.command("balance", async (ctx) => {
     ctx.reply(`💰 Solde réel : ${(lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
   } catch (err) {
     ctx.reply(`Erreur : ${(err as Error).message}`);
+  }
+});
+
+bot.command("exportkey", (ctx) => {
+  const wallet = getOrCreateWallet(ctx.from.id);
+  const privateKey = exportPrivateKeyBase58(wallet);
+  ctx.reply(
+    [
+      "🔑 Voici la clé privée de ton wallet (format base58, importable dans Phantom, Backpack, etc.) :",
+      "",
+      privateKey,
+      "",
+      "⚠️ ATTENTION :",
+      "— Quiconque a cette clé a un contrôle TOTAL sur ce wallet, y compris tous les fonds dessus.",
+      "— Ne la partage jamais, ne la colle nulle part d'autre qu'une appli wallet de confiance.",
+      "— Supprime ce message une fois la clé copiée en lieu sûr.",
+      "— Si tu penses qu'elle a fuité, transfère immédiatement tes fonds vers un nouveau wallet.",
+    ].join("\n")
+  );
+});
+
+bot.command("withdraw", async (ctx) => {
+  const [, address, amountStr] = ctx.message.text.split(" ").filter(Boolean);
+
+  if (!address || !amountStr) {
+    ctx.reply("Usage : /withdraw <adresse_solana> <montant_en_sol|all>");
+    return;
+  }
+
+  const wallet = getOrCreateWallet(ctx.from.id);
+  const signer = loadKeypair(wallet);
+
+  try {
+    let amountSol: number;
+
+    if (amountStr.toLowerCase() === "all") {
+      const params = getParams(ctx.from.id);
+      const balanceLamports = await connection.getBalance(signer.publicKey);
+      const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
+      const networkFeeBuffer = 0.001; // marge pour les frais de transaction
+      amountSol = balanceSol - params.reserveSolBalance - networkFeeBuffer;
+
+      if (amountSol <= 0) {
+        ctx.reply(
+          `Solde insuffisant pour retirer quoi que ce soit après la réserve de sécurité (${params.reserveSolBalance} SOL) et les frais réseau.`
+        );
+        return;
+      }
+    } else {
+      amountSol = Number(amountStr);
+      if (Number.isNaN(amountSol) || amountSol <= 0) {
+        ctx.reply("Le montant doit être un nombre positif, ou 'all'.");
+        return;
+      }
+    }
+
+    await ctx.reply(`⏳ Envoi de ${amountSol.toFixed(4)} SOL vers ${address}...`);
+    const signature = await sendSol(connection, signer, address, amountSol);
+    ctx.reply(`✅ Retrait effectué !\nhttps://solscan.io/tx/${signature}`);
+  } catch (err) {
+    ctx.reply(`❌ Échec du retrait : ${(err as Error).message}`);
   }
 });
 

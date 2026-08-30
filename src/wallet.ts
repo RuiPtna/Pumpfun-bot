@@ -63,3 +63,12 @@ export function loadKeypair(wallet: UserWallet): Keypair {
   const privateKeyBase58 = decrypt(wallet.encryptedPrivateKey, wallet.iv, wallet.authTag);
   return Keypair.fromSecretKey(bs58.decode(privateKeyBase58));
 }
+
+/**
+ * Déchiffre et retourne la clé privée en base58 (format standard, importable
+ * dans Phantom, Backpack, etc.). À utiliser avec précaution : quiconque possède
+ * cette chaîne a un contrôle total sur le wallet.
+ */
+export function exportPrivateKeyBase58(wallet: UserWallet): string {
+  return decrypt(wallet.encryptedPrivateKey, wallet.iv, wallet.authTag);
+}
