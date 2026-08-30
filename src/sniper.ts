@@ -218,9 +218,13 @@ export class AutoTrader {
     }
 
     const openPositions = getOpenPositions(this.telegramId);
-    if (openPositions.length >= this.params.maxOpenPositions) {
+    const isPerfectScore = score >= 100;
+    if (openPositions.length >= this.params.maxOpenPositions && !isPerfectScore) {
       this.rejectWatch(mint, "nombre maximum de positions déjà atteint", score);
       return;
+    }
+    if (isPerfectScore && openPositions.length >= this.params.maxOpenPositions) {
+      this.notify(`🌟 Score parfait (100/100) sur ${symbol} — entrée au-delà de la limite de positions habituelle`);
     }
 
     const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
@@ -311,6 +315,14 @@ export class AutoTrader {
   private async updatePositionAndCheckExit(position: OpenPosition, currentMarketCapUsd: number): Promise<void> {
     if (position.entryMarketCapUsd <= 0) return;
 
+    // Auto-réparation : une position déjà à 0% ou moins (bug de dépassement corrigé ci-dessous)
+    // ne doit plus être suivie ni provoquer de calculs de PnL faussés.
+    if (position.remainingPercent <= 0) {
+      closePosition(this.telegramId, position.mint);
+      this.peakMarketCaps.delete(position.mint);
+      return;
+    }
+
     position.lastKnownMarketCapUsd = currentMarketCapUsd;
     position.lastUpdatedAt = new Date().toISOString();
 
@@ -329,9 +341,14 @@ export class AutoTrader {
     ];
 
     for (const level of levels) {
+      if (position.remainingPercent <= 0) break; // position déjà entièrement vendue, ne rien tenter de plus
+
       if (!position.takeProfitLevelsHit.includes(level.gain) && gainPercent >= level.gain) {
         position.takeProfitLevelsHit.push(level.gain);
-        await this.exitPosition(position, level.sell, gainPercent, `🎉 ${level.key} +${level.gain}% atteint`);
+        // Ne jamais vendre plus que ce qu'il reste réellement — un prix très volatile peut
+        // franchir plusieurs paliers d'un coup entre deux vérifications.
+        const sellPercent = Math.min(level.sell, position.remainingPercent);
+        await this.exitPosition(position, sellPercent, gainPercent, `🎉 ${level.key} +${level.gain}% atteint`);
       }
     }
 

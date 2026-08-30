@@ -12,6 +12,8 @@ import {
   getClosedTrades,
   getBotState,
   saveBotState,
+  closeAllOpenPositions,
+  clearPaperClosedTrades,
 } from "./db";
 import { AutoTrader, manualSellPosition } from "./sniper";
 import { defaultParams, numericParamKeys, booleanParamKeys, StrategyParams } from "./config";
@@ -34,6 +36,7 @@ const connection = new Connection(RPC_ENDPOINT, "confirmed");
 
 const paramsByUser = new Map<number, StrategyParams>();
 const autoTraderByUser = new Map<number, AutoTrader>();
+const pendingWithdrawals = new Map<number, { step: "address" | "amount"; address?: string }>();
 
 function getParams(telegramId: number): StrategyParams {
   if (!paramsByUser.has(telegramId)) {
@@ -53,6 +56,7 @@ function mainMenuKeyboard() {
     [Markup.button.callback("💰 Solde", "menu_balance"), Markup.button.callback("📈 Dashboard", "menu_dashboard")],
     [Markup.button.callback("🟢 Auto ON", "menu_auto_on"), Markup.button.callback("🔴 Auto OFF", "menu_auto_off")],
     [Markup.button.callback("🚫 Rejetés", "menu_rejected"), Markup.button.callback("⚙️ Config", "menu_config")],
+    [Markup.button.callback("🧹 Reset Paper", "start_reset_paper")],
   ]);
 }
 
@@ -108,8 +112,16 @@ async function formatBalance(telegramId: number): Promise<string> {
   }
 }
 
+function balanceKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("➕ Ajouter SOL", "wallet_deposit"), Markup.button.callback("➖ Retirer", "wallet_withdraw_start")],
+    [Markup.button.callback("🔄 Actualiser", "menu_balance")],
+    [backToMenuButton()],
+  ]);
+}
+
 bot.command("balance", async (ctx) => {
-  ctx.reply(await formatBalance(ctx.from.id));
+  ctx.reply(await formatBalance(ctx.from.id), balanceKeyboard());
 });
 
 bot.command("exportkey", (ctx) => {
@@ -130,6 +142,31 @@ bot.command("exportkey", (ctx) => {
   );
 });
 
+async function performWithdrawal(telegramId: number, address: string, amountStr: string): Promise<string> {
+  const wallet = getOrCreateWallet(telegramId);
+  const signer = loadKeypair(wallet);
+
+  let amountSol: number;
+  if (amountStr.toLowerCase() === "all") {
+    const params = getParams(telegramId);
+    const balanceLamports = await connection.getBalance(signer.publicKey);
+    const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
+    const networkFeeBuffer = 0.001;
+    amountSol = balanceSol - params.reserveSolBalance - networkFeeBuffer;
+    if (amountSol <= 0) {
+      return `Solde insuffisant pour retirer quoi que ce soit après la réserve de sécurité (${params.reserveSolBalance} SOL) et les frais réseau.`;
+    }
+  } else {
+    amountSol = Number(amountStr);
+    if (Number.isNaN(amountSol) || amountSol <= 0) {
+      return "Le montant doit être un nombre positif, ou 'all'.";
+    }
+  }
+
+  const signature = await sendSol(connection, signer, address, amountSol);
+  return `✅ Retrait de ${amountSol.toFixed(4)} SOL effectué !\nhttps://solscan.io/tx/${signature}`;
+}
+
 bot.command("withdraw", async (ctx) => {
   const [, address, amountStr] = ctx.message.text.split(" ").filter(Boolean);
 
@@ -138,36 +175,9 @@ bot.command("withdraw", async (ctx) => {
     return;
   }
 
-  const wallet = getOrCreateWallet(ctx.from.id);
-  const signer = loadKeypair(wallet);
-
+  await ctx.reply(`⏳ Envoi vers ${address}...`);
   try {
-    let amountSol: number;
-
-    if (amountStr.toLowerCase() === "all") {
-      const params = getParams(ctx.from.id);
-      const balanceLamports = await connection.getBalance(signer.publicKey);
-      const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
-      const networkFeeBuffer = 0.001; // marge pour les frais de transaction
-      amountSol = balanceSol - params.reserveSolBalance - networkFeeBuffer;
-
-      if (amountSol <= 0) {
-        ctx.reply(
-          `Solde insuffisant pour retirer quoi que ce soit après la réserve de sécurité (${params.reserveSolBalance} SOL) et les frais réseau.`
-        );
-        return;
-      }
-    } else {
-      amountSol = Number(amountStr);
-      if (Number.isNaN(amountSol) || amountSol <= 0) {
-        ctx.reply("Le montant doit être un nombre positif, ou 'all'.");
-        return;
-      }
-    }
-
-    await ctx.reply(`⏳ Envoi de ${amountSol.toFixed(4)} SOL vers ${address}...`);
-    const signature = await sendSol(connection, signer, address, amountSol);
-    ctx.reply(`✅ Retrait effectué !\nhttps://solscan.io/tx/${signature}`);
+    ctx.reply(await performWithdrawal(ctx.from.id, address, amountStr));
   } catch (err) {
     ctx.reply(`❌ Échec du retrait : ${(err as Error).message}`);
   }
@@ -343,7 +353,7 @@ function formatPnl(telegramId: number): string {
     const pnlUsd = remainingValueUsd * (gainPercent / 100);
     const emoji = gainPercent >= 0 ? "🟢" : "🔴";
     const pnlSign = pnlUsd >= 0 ? "+" : "";
-    return `${emoji} ${p.symbol} (${p.name}) — ${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}% (${pnlSign}$${pnlUsd.toFixed(2)}) — entrée $${p.entryMarketCapUsd.toFixed(0)} → actuel $${p.lastKnownMarketCapUsd.toFixed(0)} — reste ${p.remainingPercent}%`;
+    return `${emoji} ${p.symbol} (${p.name}) — ${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}% (${pnlSign}$${pnlUsd.toFixed(2)}) — investi $${p.positionSizeUsd.toFixed(2)} — entrée $${p.entryMarketCapUsd.toFixed(0)} → actuel $${p.lastKnownMarketCapUsd.toFixed(0)} — reste ${p.remainingPercent}%`;
   });
 
   const totalPnlUsd = positions.reduce((sum, p) => {
@@ -466,6 +476,71 @@ function dashboardKeyboard() {
   ]);
 }
 
+function resetPaperData(telegramId: number): string {
+  const params = getParams(telegramId);
+  const state = getBotState(telegramId, params.startingCapitalUsd);
+
+  state.paperCapitalUsd = params.startingCapitalUsd;
+  state.consecutiveLosses = 0;
+  state.pausedUntil = null;
+  state.tokensScanned = 0;
+  state.tokensRejected = 0;
+  saveBotState(telegramId, state);
+
+  clearPaperClosedTrades(telegramId);
+
+  let positionsNote = "";
+  if (!params.liveTrading) {
+    closeAllOpenPositions(telegramId);
+    positionsNote = " et les positions ouvertes ont été effacées";
+  } else {
+    positionsNote = " (positions ouvertes conservées car le mode LIVE est actif)";
+  }
+
+  return `🧹 Données paper réinitialisées : capital remis à $${params.startingCapitalUsd}, historique de trades simulés effacé${positionsNote}.`;
+}
+
+function resetConfirmKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("✅ Confirmer la réinitialisation", "confirm_reset_paper")],
+    [Markup.button.callback("❌ Annuler", "cancel_reset_paper")],
+  ]);
+}
+
+bot.command("resetpaper", (ctx) => {
+  ctx.reply(
+    "⚠️ Ça va remettre le capital simulé à zéro et effacer tout l'historique de trades en mode paper (les positions ouvertes en paper seront aussi fermées). Confirmer ?",
+    resetConfirmKeyboard()
+  );
+});
+
+bot.action("start_reset_paper", async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.reply(
+    "⚠️ Ça va remettre le capital simulé à zéro et effacer tout l'historique de trades en mode paper (les positions ouvertes en paper seront aussi fermées). Confirmer ?",
+    resetConfirmKeyboard()
+  );
+});
+
+bot.action("confirm_reset_paper", async (ctx) => {
+  await ctx.answerCbQuery();
+  const result = resetPaperData(ctx.from!.id);
+  try {
+    await ctx.editMessageText(result, mainMenuKeyboard());
+  } catch {
+    ctx.reply(result, mainMenuKeyboard());
+  }
+});
+
+bot.action("cancel_reset_paper", async (ctx) => {
+  await ctx.answerCbQuery();
+  try {
+    await ctx.editMessageText("Réinitialisation annulée.", mainMenuKeyboard());
+  } catch {
+    ctx.reply("Réinitialisation annulée.", mainMenuKeyboard());
+  }
+});
+
 bot.command("dashboard", (ctx) => {
   ctx.reply(formatDashboard(ctx.from.id), dashboardKeyboard());
 });
@@ -515,7 +590,24 @@ bot.action("menu_positions", async (ctx) => {
 });
 bot.action("menu_balance", async (ctx) => {
   await ctx.answerCbQuery();
-  ctx.reply(await formatBalance(ctx.from!.id));
+  const text = await formatBalance(ctx.from!.id);
+  try {
+    await ctx.editMessageText(text, balanceKeyboard());
+  } catch {
+    ctx.reply(text, balanceKeyboard());
+  }
+});
+
+bot.action("wallet_deposit", async (ctx) => {
+  await ctx.answerCbQuery();
+  const wallet = getOrCreateWallet(ctx.from!.id);
+  ctx.reply(`📥 Adresse de dépôt :\n${wallet.publicKey}\n\nEnvoie du SOL directement sur cette adresse depuis n'importe quel wallet ou exchange.`);
+});
+
+bot.action("wallet_withdraw_start", async (ctx) => {
+  await ctx.answerCbQuery();
+  pendingWithdrawals.set(ctx.from!.id, { step: "address" });
+  ctx.reply("À quelle adresse Solana veux-tu envoyer des SOL ? Colle l'adresse complète.");
 });
 bot.action("menu_dashboard", async (ctx) => {
   await ctx.answerCbQuery();
@@ -552,6 +644,46 @@ bot.action("menu_auto_off", async (ctx) => {
   await ctx.answerCbQuery();
   const telegramId = ctx.from!.id;
   ctx.reply(setAutotrade(telegramId, "off", (msg) => ctx.telegram.sendMessage(telegramId, msg).catch(() => {})));
+});
+
+// Capture le texte libre uniquement pour le flux guidé de retrait (adresse puis montant).
+// Placé après toutes les commandes : un message commençant par "/" est déjà intercepté
+// par le bon bot.command() avant d'arriver ici.
+bot.on("text", async (ctx) => {
+  const telegramId = ctx.from.id;
+  const pending = pendingWithdrawals.get(telegramId);
+  if (!pending) return;
+
+  const text = ctx.message.text.trim();
+
+  if (pending.step === "address") {
+    try {
+      new PublicKey(text); // valide le format, lève une erreur sinon
+    } catch {
+      ctx.reply("Adresse invalide, réessaie (colle l'adresse Solana complète) :");
+      return;
+    }
+    pendingWithdrawals.set(telegramId, { step: "amount", address: text });
+    ctx.reply("Combien de SOL veux-tu envoyer ? (un nombre, ou 'all' pour tout retirer)");
+    return;
+  }
+
+  if (pending.step === "amount") {
+    const address = pending.address!;
+    pendingWithdrawals.delete(telegramId); // on consomme la demande, succès ou échec
+
+    if (text.toLowerCase() !== "all" && (Number.isNaN(Number(text)) || Number(text) <= 0)) {
+      ctx.reply("Montant invalide, retape /withdraw pour recommencer si besoin.");
+      return;
+    }
+
+    await ctx.reply(`⏳ Envoi vers ${address}...`);
+    try {
+      ctx.reply(await performWithdrawal(telegramId, address, text));
+    } catch (err) {
+      ctx.reply(`❌ Échec du retrait : ${(err as Error).message}`);
+    }
+  }
 });
 
 async function startBot(): Promise<void> {

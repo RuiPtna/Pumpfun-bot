@@ -159,6 +159,18 @@ export function closePosition(telegramId: number, mint: string): void {
   writeDb(data);
 }
 
+export function closeAllOpenPositions(telegramId: number): void {
+  const data = readDb();
+  data.openPositions = data.openPositions.filter((p) => p.telegramId !== telegramId);
+  writeDb(data);
+}
+
+export function clearPaperClosedTrades(telegramId: number): void {
+  const data = readDb();
+  data.closedTrades = data.closedTrades.filter((t) => !(t.telegramId === telegramId && t.wasPaper));
+  writeDb(data);
+}
+
 export function logRejectedToken(entry: RejectedToken): void {
   const data = readDb();
   data.rejectedTokens.push(entry);
