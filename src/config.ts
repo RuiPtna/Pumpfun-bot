@@ -54,15 +54,15 @@ export interface StrategyParams {
 export const defaultParams: StrategyParams = {
   startingCapitalUsd: 20,
   positionPercent: 15,
-  maxOpenPositions: 1,
+  maxOpenPositions: 2,
 
   minAgeMinutes: 2,
-  maxAgeMinutes: 30,
-  minMarketCapUsd: 3000,
-  maxMarketCapUsd: 100000,
+  maxAgeMinutes: 180,
+  minMarketCapUsd: 10000,
+  maxMarketCapUsd: 50000,
   minRealSolInvested: 1,
 
-  minEntryScore: 75,
+  minEntryScore: 70,
 
   stopLossPercent: -18,
   tp1Percent: 30,
@@ -75,7 +75,7 @@ export const defaultParams: StrategyParams = {
   tp4SellPercent: 100, // vend tout le reste à +200%
   trailingStopPercent: 15,
 
-  maxDailyLossPercent: 20,
+  maxDailyLossPercent: 80,
   consecutiveLossesForPause: 3,
   pauseDurationMinutes: 30,
   minScoreAfterPause: 80,

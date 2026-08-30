@@ -365,7 +365,7 @@ function formatPnl(telegramId: number): string {
 function pnlKeyboard(telegramId: number) {
   const positions = getOpenPositions(telegramId);
   const sellButtons = positions.map((p) => [Markup.button.callback(`💸 Vendre ${p.symbol}`, `sell_${p.mint}`)]);
-  return Markup.inlineKeyboard([...sellButtons, [Markup.button.callback("🔄 Actualiser", "menu_pnl")]]);
+  return Markup.inlineKeyboard([...sellButtons, [Markup.button.callback("🔄 Actualiser", "menu_pnl")], [backToMenuButton()]]);
 }
 
 bot.command("pnl", (ctx) => {
@@ -455,8 +455,19 @@ function formatDashboard(telegramId: number): string {
   ].join("\n");
 }
 
+function backToMenuButton() {
+  return Markup.button.callback("↩️ Menu", "menu_home");
+}
+
+function dashboardKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔄 Actualiser", "menu_dashboard")],
+    [backToMenuButton()],
+  ]);
+}
+
 bot.command("dashboard", (ctx) => {
-  ctx.reply(formatDashboard(ctx.from.id));
+  ctx.reply(formatDashboard(ctx.from.id), dashboardKeyboard());
 });
 
 // --- Boutons du menu principal ---
@@ -508,7 +519,21 @@ bot.action("menu_balance", async (ctx) => {
 });
 bot.action("menu_dashboard", async (ctx) => {
   await ctx.answerCbQuery();
-  ctx.reply(formatDashboard(ctx.from!.id));
+  const text = formatDashboard(ctx.from!.id);
+  try {
+    await ctx.editMessageText(text, dashboardKeyboard());
+  } catch {
+    ctx.reply(text, dashboardKeyboard());
+  }
+});
+
+bot.action("menu_home", async (ctx) => {
+  await ctx.answerCbQuery();
+  try {
+    await ctx.editMessageText("Menu principal :", mainMenuKeyboard());
+  } catch {
+    ctx.reply("Menu principal :", mainMenuKeyboard());
+  }
 });
 bot.action("menu_rejected", async (ctx) => {
   await ctx.answerCbQuery();
