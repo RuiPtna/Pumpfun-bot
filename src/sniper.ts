@@ -1,5 +1,5 @@
+import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import WebSocket from "ws";
-import { Connection, Keypair } from "@solana/web3.js";
 import { executeTrade } from "./trade";
 import { passesEntryFilters, StrategyConfig, TokenSnapshot } from "./strategy";
 import { logTrade, getOpenPositions, saveOpenPosition, closePosition, OpenPosition } from "./db";
@@ -72,13 +72,20 @@ export class AutoTrader {
       return;
     }
 
-    // Nouveau token créé
+    // Nouveau token créé : on programme une tentative d'achat après le délai minimum,
+    // au lieu d'attendre un événement de trade qui n'arrivera jamais pour un token
+    // auquel on n'est pas encore abonné.
     if (data.txType === "create" && data.mint) {
       this.newTokenTimestamps.set(data.mint, Date.now());
+      setTimeout(() => {
+        this.maybeEnterPosition(data.mint, data).catch((err) =>
+          this.notify(`⚠️ Erreur lors de la tentative d'achat sur ${data.mint.slice(0, 8)}... : ${err.message}`)
+        );
+      }, this.config.minTokenAgeSeconds * 1000);
       return;
     }
 
-    // Trade sur un token qu'on suit (nouveau candidat OU position ouverte)
+    // Trade sur un token qu'on suit déjà (position ouverte uniquement désormais)
     if (data.txType === "buy" || data.txType === "sell") {
       const mint = data.mint;
       if (!mint) return;
@@ -86,10 +93,8 @@ export class AutoTrader {
       const openPosition = getOpenPositions(this.telegramId).find((p) => p.mint === mint);
       if (openPosition) {
         await this.checkExitConditions(openPosition, data);
-        return;
       }
-
-      await this.maybeEnterPosition(mint, data);
+      return;
     }
   }
 
@@ -126,9 +131,7 @@ export class AutoTrader {
         priorityFeeSol: this.config.priorityFeeSol,
       });
 
-      const entryPriceSol = tradeEvent.solAmount && tradeEvent.tokenAmount
-        ? tradeEvent.solAmount / tradeEvent.tokenAmount
-        : 0;
+      const entryPriceSol = await this.getTokenPriceAfterBuy(mint, this.config.positionSizeSol);
 
       const position: OpenPosition = {
         telegramId: this.telegramId,
@@ -153,6 +156,21 @@ export class AutoTrader {
       this.notify(`✅ Achat auto exécuté sur ${mint.slice(0, 8)}...\nhttps://solscan.io/tx/${signature}`);
     } catch (err) {
       this.notify(`❌ Échec achat auto sur ${mint.slice(0, 8)}... : ${(err as Error).message}`);
+    }
+  }
+
+  /** Récupère le solde de tokens obtenu après un achat, pour calculer le vrai prix d'entrée. */
+  private async getTokenPriceAfterBuy(mint: string, solSpent: number): Promise<number> {
+    try {
+      const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+        this.signer.publicKey,
+        { mint: new PublicKey(mint) }
+      );
+      const tokensReceived = tokenAccounts.value[0]?.account.data.parsed.info.tokenAmount.uiAmount;
+      if (!tokensReceived || tokensReceived <= 0) return 0;
+      return solSpent / tokensReceived;
+    } catch {
+      return 0; // si le calcul échoue, le stop-loss/take-profit ne pourra pas s'appliquer sur cette position
     }
   }
 
