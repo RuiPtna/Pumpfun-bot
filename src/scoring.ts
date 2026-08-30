@@ -8,6 +8,7 @@ export interface TokenWatch {
   lastLiquidityUsd: number;
   lastBuys5m: number;
   lastSells5m: number;
+  lastRealSolReserves: number;
   decided: boolean;
 }
 
@@ -20,6 +21,7 @@ export function createTokenWatch(mint: string, bondingCurveKey: string | null, c
     lastLiquidityUsd: 0,
     lastBuys5m: 0,
     lastSells5m: 0,
+    lastRealSolReserves: 0,
     decided: false,
   };
 }
@@ -138,6 +140,13 @@ export function passesHardFilters(
   if (ageMinutes > params.maxAgeMinutes) return { ok: false, reason: "trop vieux" };
   if (currentMarketCapUsd < params.minMarketCapUsd) return { ok: false, reason: "market cap trop faible" };
   if (currentMarketCapUsd > params.maxMarketCapUsd) return { ok: false, reason: "market cap trop élevé" };
+
+  // Filtre anti-token-mort : le market cap "virtuel" existe même sans aucun acheteur réel.
+  // On exige un minimum de SOL réellement investi par de vrais traders (uniquement vérifiable
+  // pendant la phase bonding curve — après migration, la liquidité DexScreener sert de proxy).
+  if (watch.bondingCurveKey && watch.lastRealSolReserves < params.minRealSolInvested) {
+    return { ok: false, reason: "pas assez de SOL réellement investi (token probablement mort/sans acheteurs)" };
+  }
 
   return { ok: true };
 }

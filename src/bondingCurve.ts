@@ -49,6 +49,8 @@ function parseBondingCurveAccount(data: Buffer): BondingCurveState | null {
 export interface BondingCurveSnapshot {
   marketCapUsd: number;
   complete: boolean;
+  /** SOL réellement déposé par de vrais acheteurs (hors réserves virtuelles de départ) */
+  realSolReserves: number;
 }
 
 export async function fetchBondingCurveMarketCap(
@@ -73,7 +75,11 @@ export async function fetchBondingCurveMarketCap(
     // vaut mieux être ignorée que de déclencher un trade sur une donnée fausse.
     if (!Number.isFinite(marketCapSol) || marketCapSol <= 0 || marketCapSol > 100_000_000) return null;
 
-    return { marketCapUsd: marketCapSol * solPriceUsd, complete: state.complete };
+    return {
+      marketCapUsd: marketCapSol * solPriceUsd,
+      complete: state.complete,
+      realSolReserves: Number(state.realSolReserves) / 10 ** SOL_DECIMALS,
+    };
   } catch {
     return null;
   }

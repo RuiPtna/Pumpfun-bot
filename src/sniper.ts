@@ -26,6 +26,7 @@ const POSITION_POLL_INTERVAL_MS = 15_000;
 interface MarketCapReading {
   marketCapUsd: number;
   hasTradeCounts: boolean;
+  realSolReserves: number;
 }
 
 export class AutoTrader {
@@ -111,14 +112,14 @@ export class AutoTrader {
     if (bondingCurveKey) {
       const onChain = await fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd);
       if (onChain && !onChain.complete) {
-        return { marketCapUsd: onChain.marketCapUsd, hasTradeCounts: false };
+        return { marketCapUsd: onChain.marketCapUsd, hasTradeCounts: false, realSolReserves: onChain.realSolReserves };
       }
       // Si complete=true (gradué) ou lecture on-chain indisponible, on tente DexScreener en repli
     }
 
     const dex = await fetchDexScreenerData(mint);
     if (dex && dex.marketCapUsd > 0) {
-      return { marketCapUsd: dex.marketCapUsd, hasTradeCounts: true };
+      return { marketCapUsd: dex.marketCapUsd, hasTradeCounts: true, realSolReserves: 0 };
     }
 
     return null;
@@ -142,6 +143,7 @@ export class AutoTrader {
 
     watch.mcHistory.push({ t: Date.now(), marketCapUsd: reading.marketCapUsd });
     if (watch.mcHistory.length > 30) watch.mcHistory.shift();
+    watch.lastRealSolReserves = reading.realSolReserves;
 
     const hardFilter = passesHardFilters(watch, reading.marketCapUsd, this.params);
     if (!hardFilter.ok) {

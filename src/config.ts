@@ -15,6 +15,9 @@ export interface StrategyParams {
   minMarketCapUsd: number;
   maxMarketCapUsd: number;
 
+  /** SOL réellement investi minimum dans la bonding curve avant d'acheter (filtre les tokens morts) */
+  minRealSolInvested: number;
+
   // Scoring
   minEntryScore: number; // sur 100
 
@@ -51,8 +54,9 @@ export const defaultParams: StrategyParams = {
 
   minAgeMinutes: 2,
   maxAgeMinutes: 30,
-  minMarketCapUsd: 10000,
+  minMarketCapUsd: 3000,
   maxMarketCapUsd: 100000,
+  minRealSolInvested: 1,
 
   minEntryScore: 75,
 
@@ -87,6 +91,7 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "maxAgeMinutes",
   "minMarketCapUsd",
   "maxMarketCapUsd",
+  "minRealSolInvested",
   "minEntryScore",
   "stopLossPercent",
   "tp1Percent",
