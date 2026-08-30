@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { Connection, Keypair } from "@solana/web3.js";
 import { executeTrade } from "./trade";
+import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
 import { fetchDexScreenerData } from "./dexscreener";
@@ -86,16 +87,16 @@ export class AutoTrader {
       return;
     }
     if (data.txType === "create" && data.mint) {
-      this.beginWatching(data.mint, data.bondingCurveKey ?? null);
+      this.beginWatching(data.mint, data.name ?? "?", data.symbol ?? "?", data.bondingCurveKey ?? null);
     }
   }
 
-  private beginWatching(mint: string, bondingCurveKey: string | null): void {
+  private beginWatching(mint: string, name: string, symbol: string, bondingCurveKey: string | null): void {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     state.tokensScanned += 1;
     saveBotState(this.telegramId, state);
 
-    const watch = createTokenWatch(mint, bondingCurveKey, Date.now());
+    const watch = createTokenWatch(mint, name, symbol, bondingCurveKey, Date.now());
     this.watches.set(mint, watch);
 
     const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
@@ -155,7 +156,7 @@ export class AutoTrader {
     const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
     if (score.total < this.params.minEntryScore) return;
 
-    await this.tryEnter(mint, watch.bondingCurveKey, reading.marketCapUsd, score.total);
+    await this.tryEnter(mint, watch.name, watch.symbol, watch.bondingCurveKey, reading.marketCapUsd, score.total);
   }
 
   private finalizeWatchIfExpired(mint: string): void {
@@ -180,7 +181,14 @@ export class AutoTrader {
     this.watches.delete(mint);
   }
 
-  private async tryEnter(mint: string, bondingCurveKey: string | null, marketCapUsd: number, score: number): Promise<void> {
+  private async tryEnter(
+    mint: string,
+    name: string,
+    symbol: string,
+    bondingCurveKey: string | null,
+    marketCapUsd: number,
+    score: number
+  ): Promise<void> {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     const solPriceUsd = await getSolPriceUsd();
 
@@ -230,7 +238,7 @@ export class AutoTrader {
           return;
         }
 
-        this.notify(`🎯 [LIVE] Score ${score}/100 sur ${mint.slice(0, 8)}... — achat de ${positionSizeSol.toFixed(4)} SOL`);
+        this.notify(`🎯 [LIVE] Score ${score}/100 sur ${symbol} (${name})... — achat de ${positionSizeSol.toFixed(4)} SOL`);
         signature = await executeTrade(this.connection, this.signer, {
           action: "buy",
           mint,
@@ -242,12 +250,14 @@ export class AutoTrader {
       } else {
         simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd);
         signature = `PAPER-${Date.now()}`;
-        this.notify(`🎯 [PAPER] Score ${score}/100 sur ${mint.slice(0, 8)}... — achat simulé de $${positionSizeUsd.toFixed(2)}`);
+        this.notify(`🎯 [PAPER] Score ${score}/100 sur ${symbol} (${name})... — achat simulé de $${positionSizeUsd.toFixed(2)}`);
       }
 
       const position: OpenPosition = {
         telegramId: this.telegramId,
         mint,
+        name,
+        symbol,
         bondingCurveKey,
         entryMarketCapUsd: marketCapUsd,
         lastKnownMarketCapUsd: marketCapUsd,
@@ -275,12 +285,12 @@ export class AutoTrader {
       this.evalIntervals.delete(mint);
 
       this.notify(
-        `✅ Position ouverte sur ${mint.slice(0, 8)}...${
+        `✅ Position ouverte sur ${symbol} (${name}) — entrée à $${marketCapUsd.toFixed(0)} de market cap${
           this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
         }`
       );
     } catch (err) {
-      this.notify(`❌ Échec de l'entrée sur ${mint.slice(0, 8)}... : ${(err as Error).message}`);
+      this.notify(`❌ Échec de l'entrée sur ${symbol} (${name})... : ${(err as Error).message}`);
     }
   }
 
@@ -348,18 +358,22 @@ export class AutoTrader {
     reason: string
   ): Promise<void> {
     try {
-      this.notify(`${reason} sur ${position.mint.slice(0, 8)}...`);
+      this.notify(`${reason} sur ${position.symbol} (${position.name})`);
       let signature: string;
 
       if (this.params.liveTrading) {
-        signature = await executeTrade(this.connection, this.signer, {
-          action: "sell",
-          mint: position.mint,
-          amount: `${sellPercent}%`,
-          denominatedInSol: false,
-          slippagePercent: this.params.maxSlippagePercent,
-          priorityFeeSol: this.params.priorityFeeSol,
-        });
+        const result = await sellWithFallback(
+          this.connection,
+          this.signer,
+          position.mint,
+          `${sellPercent}%`,
+          this.params.maxSlippagePercent,
+          this.params.priorityFeeSol
+        );
+        signature = result.signature;
+        if (result.usedFallback) {
+          this.notify(`ℹ️ Vendu via Jupiter (PumpPortal n'a pas pu traiter ce token, probablement gradué)`);
+        }
       } else {
         const usdReceived = position.positionSizeUsd * (sellPercent / 100) * (1 + gainPercent / 100);
         simulateSell(this.telegramId, position.mint, usdReceived);
@@ -413,7 +427,7 @@ export class AutoTrader {
         }`
       );
     } catch (err) {
-      this.notify(`❌ Échec de la vente sur ${position.mint.slice(0, 8)}... : ${(err as Error).message}`);
+      this.notify(`❌ Échec de la vente sur ${position.symbol} (${position.name})... : ${(err as Error).message}`);
     }
   }
 }

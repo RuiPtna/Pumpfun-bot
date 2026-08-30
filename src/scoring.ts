@@ -2,6 +2,8 @@ import { StrategyParams } from "./config";
 
 export interface TokenWatch {
   mint: string;
+  name: string;
+  symbol: string;
   bondingCurveKey: string | null;
   createdAt: number;
   mcHistory: { t: number; marketCapUsd: number }[];
@@ -12,9 +14,17 @@ export interface TokenWatch {
   decided: boolean;
 }
 
-export function createTokenWatch(mint: string, bondingCurveKey: string | null, createdAt: number): TokenWatch {
+export function createTokenWatch(
+  mint: string,
+  name: string,
+  symbol: string,
+  bondingCurveKey: string | null,
+  createdAt: number
+): TokenWatch {
   return {
     mint,
+    name,
+    symbol,
     bondingCurveKey,
     createdAt,
     mcHistory: [],

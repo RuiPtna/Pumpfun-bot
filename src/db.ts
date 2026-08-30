@@ -30,6 +30,8 @@ export interface Trade {
 export interface OpenPosition {
   telegramId: number;
   mint: string;
+  name: string;
+  symbol: string;
   bondingCurveKey: string | null;
   entryMarketCapUsd: number;
   /** Dernier market cap connu (mis à jour à chaque poll DexScreener), pour afficher le PnL */
