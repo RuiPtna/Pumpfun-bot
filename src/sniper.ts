@@ -209,7 +209,7 @@ export class AutoTrader {
       return;
     }
 
-    if (state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
+    if (this.params.pauseFeatureEnabled && state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
       if (score < this.params.minScoreAfterPause) {
         this.rejectWatch(mint, `bot en pause après pertes consécutives (jusqu'à ${state.pausedUntil})`, score);
         return;
@@ -325,6 +325,7 @@ export class AutoTrader {
       { key: "TP1", gain: this.params.tp1Percent, sell: this.params.tp1SellPercent },
       { key: "TP2", gain: this.params.tp2Percent, sell: this.params.tp2SellPercent },
       { key: "TP3", gain: this.params.tp3Percent, sell: this.params.tp3SellPercent },
+      { key: "TP4", gain: this.params.tp4Percent, sell: this.params.tp4SellPercent },
     ];
 
     for (const level of levels) {
@@ -334,7 +335,7 @@ export class AutoTrader {
       }
     }
 
-    if (position.takeProfitLevelsHit.includes(this.params.tp3Percent) && position.remainingPercent > 0) {
+    if (position.takeProfitLevelsHit.includes(this.params.tp4Percent) && position.remainingPercent > 0) {
       const peak = Math.max(this.peakMarketCaps.get(position.mint) ?? currentMarketCapUsd, currentMarketCapUsd);
       this.peakMarketCaps.set(position.mint, peak);
       const dropFromPeakPercent = ((peak - currentMarketCapUsd) / peak) * 100;
@@ -402,7 +403,7 @@ export class AutoTrader {
         const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
         if (gainPercent < 0) {
           state.consecutiveLosses += 1;
-          if (state.consecutiveLosses >= this.params.consecutiveLossesForPause) {
+          if (this.params.pauseFeatureEnabled && state.consecutiveLosses >= this.params.consecutiveLossesForPause) {
             state.pausedUntil = new Date(Date.now() + this.params.pauseDurationMinutes * 60_000).toISOString();
             this.notify(`⏸️ ${state.consecutiveLosses} pertes consécutives — pause de ${this.params.pauseDurationMinutes} min`);
           }
@@ -430,4 +431,53 @@ export class AutoTrader {
       this.notify(`❌ Échec de la vente sur ${position.symbol} (${position.name})... : ${(err as Error).message}`);
     }
   }
+}
+
+/**
+ * Vend manuellement 100% d'une position (déclenché par le bouton "Vendre" sur /pnl),
+ * en mettant à jour la base (clôture la position, log le trade) exactement comme
+ * une sortie automatique — pour que le bot ne continue pas de suivre un solde vendu.
+ */
+export async function manualSellPosition(
+  telegramId: number,
+  mint: string,
+  connection: Connection,
+  signer: Keypair,
+  params: StrategyParams
+): Promise<string> {
+  const position = getOpenPositions(telegramId).find((p) => p.mint === mint);
+  if (!position) throw new Error("Position introuvable (déjà vendue ou fermée ?)");
+
+  let signature: string;
+  if (params.liveTrading) {
+    const result = await sellWithFallback(connection, signer, mint, "100%", params.maxSlippagePercent, params.priorityFeeSol);
+    signature = result.signature;
+  } else {
+    const gainPercent =
+      position.entryMarketCapUsd > 0
+        ? ((position.lastKnownMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100
+        : 0;
+    const usdReceived = position.positionSizeUsd * (position.remainingPercent / 100) * (1 + gainPercent / 100);
+    simulateSell(telegramId, mint, usdReceived);
+    signature = `PAPER-${Date.now()}`;
+  }
+
+  const gainPercent =
+    position.entryMarketCapUsd > 0
+      ? ((position.lastKnownMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100
+      : 0;
+  const pnlUsd = position.positionSizeUsd * (position.remainingPercent / 100) * (gainPercent / 100);
+
+  logTrade({ telegramId, action: "sell", mint, signature, timestamp: new Date().toISOString() });
+  logClosedTrade({
+    telegramId,
+    mint,
+    pnlUsd,
+    pnlPercent: gainPercent,
+    wasPaper: !params.liveTrading,
+    closedAt: new Date().toISOString(),
+  });
+  closePosition(telegramId, mint);
+
+  return signature;
 }

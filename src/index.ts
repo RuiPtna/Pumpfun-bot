@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Telegraf } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getOrCreateWallet, loadKeypair, exportPrivateKeyBase58 } from "./wallet";
 import { executeTrade } from "./trade";
@@ -11,8 +11,9 @@ import {
   getRejectedTokens,
   getClosedTrades,
   getBotState,
+  saveBotState,
 } from "./db";
-import { AutoTrader } from "./sniper";
+import { AutoTrader, manualSellPosition } from "./sniper";
 import { defaultParams, numericParamKeys, booleanParamKeys, StrategyParams } from "./config";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -46,6 +47,15 @@ function isAllowed(telegramId: number): boolean {
   return allowedIds.includes(telegramId);
 }
 
+function mainMenuKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("📊 PnL", "menu_pnl"), Markup.button.callback("📂 Positions", "menu_positions")],
+    [Markup.button.callback("💰 Solde", "menu_balance"), Markup.button.callback("📈 Dashboard", "menu_dashboard")],
+    [Markup.button.callback("🟢 Auto ON", "menu_auto_on"), Markup.button.callback("🔴 Auto OFF", "menu_auto_off")],
+    [Markup.button.callback("🚫 Rejetés", "menu_rejected"), Markup.button.callback("⚙️ Config", "menu_config")],
+  ]);
+}
+
 bot.use((ctx, next) => {
   const id = ctx.from?.id;
   if (!id || !isAllowed(id)) {
@@ -62,23 +72,25 @@ bot.start((ctx) => {
       "",
       "⚠️ Mode PAPER (simulation) actif par défaut — aucune transaction réelle tant que /live n'est pas activé explicitement.",
       "",
-      "Commandes principales :",
+      "Utilise les boutons ci-dessous pour l'usage courant, ou tape /menu à tout moment pour les réafficher.",
+      "",
+      "Commandes complètes (pour ce qui n'a pas de bouton) :",
       "/wallet — voir ou créer ton wallet",
-      "/balance — voir ton solde SOL",
       "/withdraw <adresse> <montant|all> — retirer du SOL vers une autre adresse",
       "/exportkey — exporter la clé privée (Phantom, Backpack...)",
       "/buy <mint> <montant_sol> — acheter manuellement",
       "/sell <mint> <pourcentage|montant> — vendre manuellement",
-      "/autotrade on|off — activer/désactiver le scanner automatique",
-      "/dashboard — statistiques en temps réel",
-      "/config — voir/régler tous les paramètres de stratégie",
+      "/pausefeature on|off — activer/désactiver la pause automatique après pertes",
+      "/resume — lever une pause en cours immédiatement",
       "/set <clé> <valeur> — modifier un paramètre",
-      "/openpositions — positions ouvertes",
-      "/pnl — gain/perte des positions ouvertes",
-      "/rejected — derniers tokens rejetés et pourquoi",
       "/live on|off — activer/désactiver le trading RÉEL (danger)",
-    ].join("\n")
+    ].join("\n"),
+    mainMenuKeyboard()
   );
+});
+
+bot.command("menu", (ctx) => {
+  ctx.reply("Menu principal :", mainMenuKeyboard());
 });
 
 bot.command("wallet", (ctx) => {
@@ -86,14 +98,18 @@ bot.command("wallet", (ctx) => {
   ctx.reply(`🔑 Ton adresse wallet :\n${wallet.publicKey}\n\nDépose du SOL dessus pour trader en live.`);
 });
 
-bot.command("balance", async (ctx) => {
-  const wallet = getOrCreateWallet(ctx.from.id);
+async function formatBalance(telegramId: number): Promise<string> {
+  const wallet = getOrCreateWallet(telegramId);
   try {
     const lamports = await connection.getBalance(new PublicKey(wallet.publicKey));
-    ctx.reply(`💰 Solde réel : ${(lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
+    return `💰 Solde réel : ${(lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`;
   } catch (err) {
-    ctx.reply(`Erreur : ${(err as Error).message}`);
+    return `Erreur : ${(err as Error).message}`;
   }
+}
+
+bot.command("balance", async (ctx) => {
+  ctx.reply(await formatBalance(ctx.from.id));
 });
 
 bot.command("exportkey", (ctx) => {
@@ -210,9 +226,9 @@ bot.command("sell", async (ctx) => {
   }
 });
 
-bot.command("config", (ctx) => {
-  const p = getParams(ctx.from.id);
-  const lines = [
+function formatConfig(telegramId: number): string {
+  const p = getParams(telegramId);
+  return [
     `Mode : ${p.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)"}`,
     `Capital de départ : $${p.startingCapitalUsd} — Position : ${p.positionPercent}% du capital`,
     `Positions max : ${p.maxOpenPositions}`,
@@ -220,17 +236,20 @@ bot.command("config", (ctx) => {
     `Market cap accepté : $${p.minMarketCapUsd}-$${p.maxMarketCapUsd}`,
     `Score minimum pour entrer : ${p.minEntryScore}/100`,
     `Stop-loss : ${p.stopLossPercent}%`,
-    `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}%`,
+    `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}%`,
     `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,
     `Perte quotidienne max : ${p.maxDailyLossPercent}%`,
-    `Pause après ${p.consecutiveLossesForPause} pertes consécutives, ${p.pauseDurationMinutes} min (reprise si score ≥ ${p.minScoreAfterPause})`,
+    `Pause après pertes : ${p.pauseFeatureEnabled ? "🟢 activée" : "🔴 désactivée"} (${p.consecutiveLossesForPause} pertes consécutives, ${p.pauseDurationMinutes} min, reprise si score ≥ ${p.minScoreAfterPause})`,
     `Slippage max : ${p.maxSlippagePercent}% — Priority fee : ${p.priorityFeeSol} SOL — Réserve : ${p.reserveSolBalance} SOL`,
     "",
     "Modifier : /set <clé> <valeur>",
     `Clés numériques : ${numericParamKeys.join(", ")}`,
     `Clés on/off : ${booleanParamKeys.join(", ")} (via /live et le mode paper)`,
-  ];
-  ctx.reply(lines.join("\n"));
+  ].join("\n");
+}
+
+bot.command("config", (ctx) => {
+  ctx.reply(formatConfig(ctx.from.id));
 });
 
 bot.command("set", (ctx) => {
@@ -269,14 +288,7 @@ bot.command("live", (ctx) => {
   }
 });
 
-bot.command("autotrade", (ctx) => {
-  const [, mode] = ctx.message.text.split(" ").filter(Boolean);
-  if (mode !== "on" && mode !== "off") {
-    ctx.reply("Usage : /autotrade on  ou  /autotrade off");
-    return;
-  }
-
-  const telegramId = ctx.from.id;
+function setAutotrade(telegramId: number, mode: "on" | "off", sendMessage: (msg: string) => void): string {
   const params = getParams(telegramId);
 
   if (mode === "on") {
@@ -285,62 +297,127 @@ bot.command("autotrade", (ctx) => {
 
     let trader = autoTraderByUser.get(telegramId);
     if (!trader) {
-      trader = new AutoTrader(telegramId, connection, signer, params, (msg) => {
-        ctx.telegram.sendMessage(telegramId, msg).catch(() => {});
-      });
+      trader = new AutoTrader(telegramId, connection, signer, params, sendMessage);
       autoTraderByUser.set(telegramId, trader);
     }
     trader.start();
-    ctx.reply(`🟢 Auto-trading activé en mode ${params.liveTrading ? "LIVE" : "PAPER"}.`);
+    return `🟢 Auto-trading activé en mode ${params.liveTrading ? "LIVE" : "PAPER"}.`;
   } else {
     autoTraderByUser.get(telegramId)?.stop();
-    ctx.reply("🔴 Auto-trading désactivé.");
+    return "🔴 Auto-trading désactivé.";
   }
-});
+}
 
-bot.command("openpositions", (ctx) => {
-  const positions = getOpenPositions(ctx.from.id);
-  if (positions.length === 0) {
-    ctx.reply("Aucune position ouverte.");
+bot.command("autotrade", (ctx) => {
+  const [, mode] = ctx.message.text.split(" ").filter(Boolean);
+  if (mode !== "on" && mode !== "off") {
+    ctx.reply("Usage : /autotrade on  ou  /autotrade off");
     return;
   }
+  const telegramId = ctx.from.id;
+  ctx.reply(setAutotrade(telegramId, mode, (msg) => ctx.telegram.sendMessage(telegramId, msg).catch(() => {})));
+});
+
+function formatOpenPositions(telegramId: number): string {
+  const positions = getOpenPositions(telegramId);
+  if (positions.length === 0) return "Aucune position ouverte.";
   const lines = positions.map(
     (p) =>
       `${p.symbol} (${p.name})\n${p.mint}\nEntrée à $${p.entryMarketCapUsd.toFixed(0)} de market cap — reste ${p.remainingPercent}% — ouvert le ${new Date(p.openedAt).toLocaleString("fr-FR")}`
   );
-  ctx.reply(lines.join("\n\n"));
+  return lines.join("\n\n");
+}
+
+bot.command("openpositions", (ctx) => {
+  ctx.reply(formatOpenPositions(ctx.from.id));
 });
 
-bot.command("pnl", (ctx) => {
-  const positions = getOpenPositions(ctx.from.id);
-  if (positions.length === 0) {
-    ctx.reply("Aucune position ouverte.");
-    return;
-  }
+function formatPnl(telegramId: number): string {
+  const positions = getOpenPositions(telegramId);
+  if (positions.length === 0) return "Aucune position ouverte.";
+
   const lines = positions.map((p) => {
     if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) return `${p.symbol} (${p.name}) — PnL inconnu`;
     const gainPercent = ((p.lastKnownMarketCapUsd - p.entryMarketCapUsd) / p.entryMarketCapUsd) * 100;
+    const remainingValueUsd = p.positionSizeUsd * (p.remainingPercent / 100);
+    const pnlUsd = remainingValueUsd * (gainPercent / 100);
     const emoji = gainPercent >= 0 ? "🟢" : "🔴";
-    return `${emoji} ${p.symbol} (${p.name}) — ${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}% — entrée $${p.entryMarketCapUsd.toFixed(0)} → actuel $${p.lastKnownMarketCapUsd.toFixed(0)} — reste ${p.remainingPercent}%`;
+    const pnlSign = pnlUsd >= 0 ? "+" : "";
+    return `${emoji} ${p.symbol} (${p.name}) — ${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}% (${pnlSign}$${pnlUsd.toFixed(2)}) — entrée $${p.entryMarketCapUsd.toFixed(0)} → actuel $${p.lastKnownMarketCapUsd.toFixed(0)} — reste ${p.remainingPercent}%`;
   });
-  ctx.reply(["📊 PnL des positions ouvertes :", "", ...lines].join("\n"));
+
+  const totalPnlUsd = positions.reduce((sum, p) => {
+    if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) return sum;
+    const gainPercent = ((p.lastKnownMarketCapUsd - p.entryMarketCapUsd) / p.entryMarketCapUsd) * 100;
+    const remainingValueUsd = p.positionSizeUsd * (p.remainingPercent / 100);
+    return sum + remainingValueUsd * (gainPercent / 100);
+  }, 0);
+
+  return [
+    "📊 PnL des positions ouvertes :",
+    "",
+    ...lines,
+    "",
+    `Total non réalisé : ${totalPnlUsd >= 0 ? "+" : ""}$${totalPnlUsd.toFixed(2)}`,
+  ].join("\n");
+}
+
+function pnlKeyboard(telegramId: number) {
+  const positions = getOpenPositions(telegramId);
+  const sellButtons = positions.map((p) => [Markup.button.callback(`💸 Vendre ${p.symbol}`, `sell_${p.mint}`)]);
+  return Markup.inlineKeyboard([...sellButtons, [Markup.button.callback("🔄 Actualiser", "menu_pnl")]]);
+}
+
+bot.command("pnl", (ctx) => {
+  ctx.reply(formatPnl(ctx.from.id), pnlKeyboard(ctx.from.id));
 });
 
-bot.command("rejected", (ctx) => {
-  const rejected = getRejectedTokens(ctx.from.id, 15);
-  if (rejected.length === 0) {
-    ctx.reply("Aucun rejet enregistré pour l'instant.");
-    return;
-  }
+function formatRejected(telegramId: number): string {
+  const rejected = getRejectedTokens(telegramId, 15);
+  if (rejected.length === 0) return "Aucun rejet enregistré pour l'instant.";
   const lines = rejected
     .slice()
     .reverse()
     .map((r) => `${r.mint.slice(0, 8)}... — ${r.reason}${r.score ? ` (score ${r.score}/100)` : ""}`);
-  ctx.reply(["🚫 Derniers tokens rejetés :", "", ...lines].join("\n"));
+  return ["🚫 Derniers tokens rejetés :", "", ...lines].join("\n");
+}
+
+bot.command("rejected", (ctx) => {
+  ctx.reply(formatRejected(ctx.from.id));
 });
 
-bot.command("dashboard", (ctx) => {
+bot.command("pausefeature", (ctx) => {
+  const [, mode] = ctx.message.text.split(" ").filter(Boolean);
+  const params = getParams(ctx.from.id);
+
+  if (mode === "on") {
+    params.pauseFeatureEnabled = true;
+    ctx.reply("🟢 Pause automatique après pertes consécutives : activée.");
+  } else if (mode === "off") {
+    params.pauseFeatureEnabled = false;
+    ctx.reply("🔴 Pause automatique après pertes consécutives : désactivée. Le bot continuera de trader même après plusieurs pertes d'affilée.");
+  } else {
+    ctx.reply(`Usage : /pausefeature on  ou  /pausefeature off\nÉtat actuel : ${params.pauseFeatureEnabled ? "activée" : "désactivée"}`);
+  }
+});
+
+bot.command("resume", (ctx) => {
   const telegramId = ctx.from.id;
+  const params = getParams(telegramId);
+  const state = getBotState(telegramId, params.startingCapitalUsd);
+
+  if (!state.pausedUntil) {
+    ctx.reply("Le bot n'est pas en pause actuellement.");
+    return;
+  }
+
+  state.pausedUntil = null;
+  state.consecutiveLosses = 0;
+  saveBotState(telegramId, state);
+  ctx.reply("▶️ Pause levée immédiatement, compteur de pertes consécutives remis à zéro.");
+});
+
+function formatDashboard(telegramId: number): string {
   const params = getParams(telegramId);
   const state = getBotState(telegramId, params.startingCapitalUsd);
   const closedTrades = getClosedTrades(telegramId);
@@ -363,21 +440,93 @@ bot.command("dashboard", (ctx) => {
     maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdown);
   }
 
-  ctx.reply(
-    [
-      `📊 DASHBOARD — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
-      "",
-      `Capital simulé : $${state.paperCapitalUsd.toFixed(2)}`,
-      `PnL total : ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`,
-      `Positions ouvertes : ${openPositions.length}/${params.maxOpenPositions}`,
-      `Trades clôturés : ${closedTrades.length} — Win rate : ${winRate.toFixed(0)}%`,
-      `Gain moyen : +$${avgProfit.toFixed(2)} — Perte moyenne : $${avgLoss.toFixed(2)}`,
-      `Max drawdown : -${maxDrawdownPercent.toFixed(1)}%`,
-      `Tokens scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
-      `Pertes consécutives actuelles : ${state.consecutiveLosses}`,
-      state.pausedUntil ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}` : "▶️ Actif",
-    ].join("\n")
-  );
+  return [
+    `📊 DASHBOARD — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
+    "",
+    `Capital simulé : $${state.paperCapitalUsd.toFixed(2)}`,
+    `PnL total : ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`,
+    `Positions ouvertes : ${openPositions.length}/${params.maxOpenPositions}`,
+    `Trades clôturés : ${closedTrades.length} — Win rate : ${winRate.toFixed(0)}%`,
+    `Gain moyen : +$${avgProfit.toFixed(2)} — Perte moyenne : $${avgLoss.toFixed(2)}`,
+    `Max drawdown : -${maxDrawdownPercent.toFixed(1)}%`,
+    `Tokens scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
+    `Pertes consécutives actuelles : ${state.consecutiveLosses}`,
+    state.pausedUntil ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}` : "▶️ Actif",
+  ].join("\n");
+}
+
+bot.command("dashboard", (ctx) => {
+  ctx.reply(formatDashboard(ctx.from.id));
+});
+
+// --- Boutons du menu principal ---
+bot.action("menu_pnl", async (ctx) => {
+  await ctx.answerCbQuery();
+  const telegramId = ctx.from!.id;
+  const text = formatPnl(telegramId);
+  try {
+    await ctx.editMessageText(text, pnlKeyboard(telegramId));
+  } catch {
+    // Le message ne peut pas être édité (trop vieux, ou contenu identique) — on en renvoie un nouveau
+    ctx.reply(text, pnlKeyboard(telegramId));
+  }
+});
+
+bot.action(/^sell_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const telegramId = ctx.from!.id;
+  const mint = ctx.match[1];
+
+  const wallet = getOrCreateWallet(telegramId);
+  const signer = loadKeypair(wallet);
+  const params = getParams(telegramId);
+
+  await ctx.reply(`⏳ Vente en cours sur ${mint.slice(0, 8)}...`);
+  try {
+    const signature = await manualSellPosition(telegramId, mint, connection, signer, params);
+    const note = params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)";
+    await ctx.reply(`✅ Position vendue intégralement.${note}`);
+  } catch (err) {
+    await ctx.reply(`❌ Échec de la vente : ${(err as Error).message}`);
+  }
+
+  // Rafraîchit l'affichage du PnL pour refléter la position fermée
+  const text = formatPnl(telegramId);
+  try {
+    await ctx.editMessageText(text, pnlKeyboard(telegramId));
+  } catch {
+    ctx.reply(text, pnlKeyboard(telegramId));
+  }
+});
+bot.action("menu_positions", async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.reply(formatOpenPositions(ctx.from!.id));
+});
+bot.action("menu_balance", async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.reply(await formatBalance(ctx.from!.id));
+});
+bot.action("menu_dashboard", async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.reply(formatDashboard(ctx.from!.id));
+});
+bot.action("menu_rejected", async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.reply(formatRejected(ctx.from!.id));
+});
+bot.action("menu_config", async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.reply(formatConfig(ctx.from!.id));
+});
+bot.action("menu_auto_on", async (ctx) => {
+  await ctx.answerCbQuery();
+  const telegramId = ctx.from!.id;
+  ctx.reply(setAutotrade(telegramId, "on", (msg) => ctx.telegram.sendMessage(telegramId, msg).catch(() => {})));
+});
+bot.action("menu_auto_off", async (ctx) => {
+  await ctx.answerCbQuery();
+  const telegramId = ctx.from!.id;
+  ctx.reply(setAutotrade(telegramId, "off", (msg) => ctx.telegram.sendMessage(telegramId, msg).catch(() => {})));
 });
 
 async function startBot(): Promise<void> {

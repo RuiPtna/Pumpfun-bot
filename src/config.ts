@@ -29,13 +29,17 @@ export interface StrategyParams {
   tp2SellPercent: number;
   tp3Percent: number;
   tp3SellPercent: number;
-  trailingStopPercent: number; // appliqué sur le runner après TP3
+  tp4Percent: number;
+  tp4SellPercent: number;
+  trailingStopPercent: number; // appliqué sur le runner après TP4 (si non entièrement vendu)
 
   // Protection du capital
   maxDailyLossPercent: number;
   consecutiveLossesForPause: number;
   pauseDurationMinutes: number;
   minScoreAfterPause: number;
+  /** Interrupteur général : si false, aucune pause automatique n'est déclenchée, quel que soit le nombre de pertes */
+  pauseFeatureEnabled: boolean;
 
   // Exécution
   maxSlippagePercent: number;
@@ -66,13 +70,16 @@ export const defaultParams: StrategyParams = {
   tp2Percent: 50,
   tp2SellPercent: 25,
   tp3Percent: 100,
-  tp3SellPercent: 30, // le reste (~20%) devient le "runner" au trailing stop
+  tp3SellPercent: 30,
+  tp4Percent: 200,
+  tp4SellPercent: 100, // vend tout le reste à +200%
   trailingStopPercent: 15,
 
   maxDailyLossPercent: 20,
   consecutiveLossesForPause: 3,
   pauseDurationMinutes: 30,
   minScoreAfterPause: 80,
+  pauseFeatureEnabled: true,
 
   maxSlippagePercent: 15,
   priorityFeeSol: 0.0005,
@@ -100,6 +107,8 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "tp2SellPercent",
   "tp3Percent",
   "tp3SellPercent",
+  "tp4Percent",
+  "tp4SellPercent",
   "trailingStopPercent",
   "maxDailyLossPercent",
   "consecutiveLossesForPause",
@@ -110,4 +119,4 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "reserveSolBalance",
 ];
 
-export const booleanParamKeys: (keyof StrategyParams)[] = ["paperMode", "liveTrading"];
+export const booleanParamKeys: (keyof StrategyParams)[] = ["paperMode", "liveTrading", "pauseFeatureEnabled"];
