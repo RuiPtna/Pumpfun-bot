@@ -8,6 +8,7 @@ import { fetchDexScreenerData } from "./dexscreener";
 import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
+import { escapeHtml } from "./htmlEscape";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
   logTrade,
@@ -288,9 +289,9 @@ export class AutoTrader {
 
     try {
       let signature: string;
-      if (this.params.liveTrading) {
-        const positionSizeSol = positionSizeUsd / solPriceUsd;
+      const positionSizeSol = positionSizeUsd / solPriceUsd;
 
+      if (this.params.liveTrading) {
         const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
         const balanceSol = balanceLamports / 1_000_000_000;
         if (balanceSol - positionSizeSol - this.params.priorityFeeSol - 0.001 < this.params.reserveSolBalance) {
@@ -298,7 +299,6 @@ export class AutoTrader {
           return;
         }
 
-        this.notify(`🎯 [LIVE] Score ${score}/100 sur ${symbol} (${name})... — achat de ${positionSizeSol.toFixed(4)} SOL`);
         signature = await executeTrade(this.connection, this.signer, {
           action: "buy",
           mint,
@@ -310,7 +310,6 @@ export class AutoTrader {
       } else {
         simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd);
         signature = `PAPER-${Date.now()}`;
-        this.notify(`🎯 [PAPER] Score ${score}/100 sur ${symbol} (${name})... — achat simulé de $${positionSizeUsd.toFixed(2)}`);
       }
 
       const position: OpenPosition = {
@@ -344,13 +343,17 @@ export class AutoTrader {
       if (interval) clearInterval(interval);
       this.evalIntervals.delete(mint);
 
+      const modeTag = this.params.liveTrading ? "🔴 LIVE" : "📝 PAPER";
+      const amountLine = this.params.liveTrading
+        ? `${positionSizeSol.toFixed(4)} SOL`
+        : `$${positionSizeUsd.toFixed(2)} (simulé)`;
+      const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
-        `✅ Position ouverte sur ${symbol} (${name}) — entrée à $${marketCapUsd.toFixed(0)} de market cap${
-          this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
-        }`
+        `✅ ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)})\n` +
+          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${marketCapUsd.toFixed(0)}</b> de market cap${txLine}`
       );
     } catch (err) {
-      this.notify(`❌ Échec de l'entrée sur ${symbol} (${name})... : ${(err as Error).message}`);
+      this.notify(`❌ Échec de l'entrée sur ${escapeHtml(symbol)} (${escapeHtml(name)})... : ${escapeHtml((err as Error).message)}`);
     }
   }
 
@@ -385,7 +388,7 @@ export class AutoTrader {
     const gainPercent = ((currentMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100;
 
     if (gainPercent <= this.params.stopLossPercent) {
-      await this.exitPosition(position, 100, gainPercent, `🛑 Stop-loss déclenché (${gainPercent.toFixed(1)}%)`);
+      await this.exitPosition(position, 100, gainPercent, `🛑 <b>Stop-loss</b> déclenché (${gainPercent.toFixed(1)}%)`);
       return;
     }
 
@@ -417,7 +420,7 @@ export class AutoTrader {
         // Ne jamais vendre plus que ce qu'il reste réellement — un prix très volatile peut
         // franchir plusieurs paliers d'un coup entre deux vérifications.
         const sellPercent = Math.min(level.sell, position.remainingPercent);
-        await this.exitPosition(position, sellPercent, gainPercent, `🎉 ${level.key} +${level.gain}% atteint`);
+        await this.exitPosition(position, sellPercent, gainPercent, `🎉 <b>${level.key} +${level.gain}%</b> atteint`);
       }
     }
 
@@ -430,7 +433,7 @@ export class AutoTrader {
           position,
           100,
           gainPercent,
-          `📉 Trailing stop déclenché (-${dropFromPeakPercent.toFixed(1)}% depuis le plus haut)`
+          `📉 <b>Trailing stop</b> déclenché (-${dropFromPeakPercent.toFixed(1)}% depuis le plus haut)`
         );
       }
     }
@@ -445,8 +448,8 @@ export class AutoTrader {
     reason: string
   ): Promise<void> {
     try {
-      this.notify(`${reason} sur ${position.symbol} (${position.name})`);
       let signature: string;
+      let fallbackNote = "";
 
       if (this.params.liveTrading) {
         const result = await sellWithFallback(
@@ -459,7 +462,7 @@ export class AutoTrader {
         );
         signature = result.signature;
         if (result.usedFallback) {
-          this.notify(`ℹ️ Vendu via Jupiter (PumpPortal n'a pas pu traiter ce token, probablement gradué)`);
+          fallbackNote = "\nℹ️ Vendu via Jupiter (PumpPortal n'a pas pu traiter ce token, probablement gradué)";
         }
       } else {
         const usdReceived = position.positionSizeUsd * (sellPercent / 100) * (1 + gainPercent / 100);
@@ -510,13 +513,14 @@ export class AutoTrader {
         saveOpenPosition(position);
       }
 
+      const pnlSign = pnlUsdForSlice >= 0 ? "+" : "";
+      const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : " (paper)";
       this.notify(
-        `✅ Vente exécutée sur ${position.symbol} (${position.name}) — ${sellPercent}% de la position.${
-          this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
-        }`
+        `${reason} sur <b>${escapeHtml(position.symbol)}</b> (${escapeHtml(position.name)})\n` +
+          `Vendu ${sellPercent}% — <b>${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}%</b> (${pnlSign}$${pnlUsdForSlice.toFixed(2)})${txLine}${fallbackNote}`
       );
     } catch (err) {
-      this.notify(`❌ Échec de la vente sur ${position.symbol} (${position.name})... : ${(err as Error).message}`);
+      this.notify(`❌ Échec de la vente sur ${escapeHtml(position.symbol)} (${escapeHtml(position.name)})... : ${escapeHtml((err as Error).message)}`);
     }
   }
 }

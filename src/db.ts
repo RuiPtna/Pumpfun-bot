@@ -189,6 +189,11 @@ export function getRejectedTokens(telegramId: number, limit = 20): RejectedToken
     .slice(-limit);
 }
 
+/** Tous les rejets conservés pour cet utilisateur (jusqu'à 500, voir logRejectedToken) — pour les stats agrégées. */
+export function getAllRejectedTokens(telegramId: number): RejectedToken[] {
+  return readDb().rejectedTokens.filter((r) => r.telegramId === telegramId);
+}
+
 export function logClosedTrade(entry: ClosedTrade): void {
   const data = readDb();
   data.closedTrades.push(entry);
