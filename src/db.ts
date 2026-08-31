@@ -56,6 +56,8 @@ export interface RejectedToken {
 export interface ClosedTrade {
   telegramId: number;
   mint: string;
+  name: string;
+  symbol: string;
   pnlUsd: number;
   pnlPercent: number;
   wasPaper: boolean;

@@ -72,7 +72,8 @@ function mainMenuKeyboard() {
     [Markup.button.callback("📊 PnL", "menu_pnl"), Markup.button.callback("📂 Positions", "menu_positions")],
     [Markup.button.callback("💰 Solde", "menu_balance"), Markup.button.callback("📈 Dashboard", "menu_dashboard")],
     [Markup.button.callback("🟢 Auto ON", "menu_auto_on"), Markup.button.callback("🔴 Auto OFF", "menu_auto_off")],
-    [Markup.button.callback("🚫 Rejetés", "menu_rejected"), Markup.button.callback("⚙️ Config", "menu_config")],
+    [Markup.button.callback("🚫 Rejetés", "menu_rejected"), Markup.button.callback("📜 Historique", "menu_history")],
+    [Markup.button.callback("⚙️ Config", "menu_config")],
     [Markup.button.callback("🧹 Reset Paper", "start_reset_paper")],
   ]);
 }
@@ -102,6 +103,7 @@ bot.start((ctx) => {
       "/buy <mint> <montant_sol> — acheter manuellement",
       "/sell <mint> <pourcentage|montant> — vendre manuellement",
       "/pausefeature on|off — activer/désactiver la pause automatique après pertes",
+      "/history — historique des trades clôturés",
       "/resume — lever une pause en cours immédiatement",
       "/set <clé> <valeur> — modifier un paramètre",
       "/live on|off — activer/désactiver le trading RÉEL (danger)",
@@ -409,6 +411,40 @@ function formatRejected(telegramId: number): string {
     .map((r) => `${r.mint.slice(0, 8)}... — ${r.reason}${r.score ? ` (score ${r.score}/100)` : ""}`);
   return ["🚫 Derniers tokens rejetés :", "", ...lines].join("\n");
 }
+
+function formatHistory(telegramId: number, limit = 20): string {
+  const trades = getClosedTrades(telegramId)
+    .slice()
+    .reverse()
+    .slice(0, limit);
+  if (trades.length === 0) return "Aucun trade clôturé pour l'instant.";
+
+  const lines = trades.map((t) => {
+    const emoji = t.pnlUsd >= 0 ? "🟢" : "🔴";
+    const sign = t.pnlUsd >= 0 ? "+" : "";
+    const mode = t.wasPaper ? "📝" : "🔴";
+    const date = new Date(t.closedAt).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return `${emoji} ${mode} ${t.symbol} (${t.name}) — ${t.pnlPercent >= 0 ? "+" : ""}${t.pnlPercent.toFixed(1)}% (${sign}$${t.pnlUsd.toFixed(2)}) — ${date}`;
+  });
+
+  return [`📜 Historique des ${trades.length} derniers trades :`, "", ...lines].join("\n");
+}
+
+function historyKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔄 Actualiser", "menu_history")],
+    [backToMenuButton()],
+  ]);
+}
+
+bot.command("history", (ctx) => {
+  ctx.reply(formatHistory(ctx.from.id), historyKeyboard());
+});
+
+bot.action("menu_history", async (ctx) => {
+  await ctx.answerCbQuery();
+  await editOrReply(ctx, formatHistory(ctx.from!.id), historyKeyboard());
+});
 
 bot.command("rejected", (ctx) => {
   ctx.reply(formatRejected(ctx.from.id));

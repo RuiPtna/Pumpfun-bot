@@ -463,6 +463,8 @@ export class AutoTrader {
       logClosedTrade({
         telegramId: this.telegramId,
         mint: position.mint,
+        name: position.name,
+        symbol: position.symbol,
         pnlUsd: pnlUsdForSlice,
         pnlPercent: gainPercent,
         wasPaper: !this.params.liveTrading,
@@ -542,6 +544,8 @@ export async function manualSellPosition(
   logClosedTrade({
     telegramId,
     mint,
+    name: position.name,
+    symbol: position.symbol,
     pnlUsd,
     pnlPercent: gainPercent,
     wasPaper: !params.liveTrading,
