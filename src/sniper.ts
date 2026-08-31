@@ -8,6 +8,7 @@ import { fetchDexScreenerData } from "./dexscreener";
 import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
+import { checkMintAuthorities } from "./mintAuthority";
 import { escapeHtml } from "./htmlEscape";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
@@ -19,6 +20,7 @@ import {
   logClosedTrade,
   getBotState,
   saveBotState,
+  isBlacklistedCreator,
   OpenPosition,
 } from "./db";
 
@@ -89,7 +91,14 @@ export class AutoTrader {
       return;
     }
     if (data.txType === "create" && data.mint) {
-      this.beginWatching(data.mint, data.name ?? "?", data.symbol ?? "?", data.bondingCurveKey ?? null, data.traderPublicKey ?? null);
+      this.beginWatching(
+        data.mint,
+        data.name ?? "?",
+        data.symbol ?? "?",
+        data.bondingCurveKey ?? null,
+        data.traderPublicKey ?? null,
+        typeof data.solAmount === "number" ? data.solAmount : 0
+      );
     }
   }
 
@@ -98,13 +107,14 @@ export class AutoTrader {
     name: string,
     symbol: string,
     bondingCurveKey: string | null,
-    creatorAddress: string | null
+    creatorAddress: string | null,
+    creatorInitialBuySol: number
   ): void {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     state.tokensScanned += 1;
     saveBotState(this.telegramId, state);
 
-    const watch = createTokenWatch(mint, name, symbol, bondingCurveKey, creatorAddress, Date.now());
+    const watch = createTokenWatch(mint, name, symbol, bondingCurveKey, creatorAddress, creatorInitialBuySol, Date.now());
     this.watches.set(mint, watch);
 
     const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
@@ -172,7 +182,17 @@ export class AutoTrader {
     const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
     if (score.total < this.params.minEntryScore) return;
 
-    await this.tryEnter(mint, watch.name, watch.symbol, watch.bondingCurveKey, watch.creatorAddress, reading.marketCapUsd, score.total, reading.hasTradeCounts);
+    await this.tryEnter(
+      mint,
+      watch.name,
+      watch.symbol,
+      watch.bondingCurveKey,
+      watch.creatorAddress,
+      watch.creatorInitialBuySol,
+      reading.marketCapUsd,
+      score.total,
+      reading.hasTradeCounts
+    );
   }
 
   private finalizeWatchIfExpired(mint: string): void {
@@ -203,12 +223,40 @@ export class AutoTrader {
     symbol: string,
     bondingCurveKey: string | null,
     creatorAddress: string | null,
+    creatorInitialBuySol: number,
     marketCapUsd: number,
     score: number,
     hasTradeCounts: boolean
   ): Promise<void> {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     const solPriceUsd = await getSolPriceUsd();
+
+    // Créateur récidiviste : nous a déjà fait perdre gros par le passé — rejet immédiat,
+    // sans même avoir besoin d'appeler le RPC pour les autres vérifications.
+    if (creatorAddress && isBlacklistedCreator(this.telegramId, creatorAddress)) {
+      this.rejectWatch(mint, "créateur récidiviste (perte importante déjà subie avec ce créateur)", score);
+      return;
+    }
+
+    // Achat initial du créateur trop faible : corrèle fortement avec les rugs instantanés
+    // (le créateur ne s'engage pas vraiment sur son propre lancement).
+    if (creatorInitialBuySol < this.params.minCreatorInitialBuySol) {
+      this.rejectWatch(
+        mint,
+        `achat initial du créateur trop faible (${creatorInitialBuySol.toFixed(2)} SOL, min ${this.params.minCreatorInitialBuySol} SOL)`,
+        score
+      );
+      return;
+    }
+
+    // Autorités mint/freeze non révoquées : piège honeypot potentiel (dilution ou gel du wallet).
+    if (this.params.requireRevokedAuthorities) {
+      const authorities = await checkMintAuthorities(this.connection, mint);
+      if (authorities && (!authorities.mintAuthorityRevoked || !authorities.freezeAuthorityRevoked)) {
+        this.rejectWatch(mint, "autorité de mint ou de freeze non révoquée (risque honeypot)", score);
+        return;
+      }
+    }
 
     // Vérification du % détenu par le créateur — le signal de rug le plus fiable, applicable
     // à tout moment (avant ou après migration), contrairement à la concentration globale des
@@ -323,6 +371,7 @@ export class AutoTrader {
         name,
         symbol,
         bondingCurveKey,
+        creatorAddress,
         entryMarketCapUsd: marketCapUsd,
         lastKnownMarketCapUsd: marketCapUsd,
         lastUpdatedAt: new Date().toISOString(),
@@ -489,6 +538,7 @@ export class AutoTrader {
         mint: position.mint,
         name: position.name,
         symbol: position.symbol,
+        creatorAddress: position.creatorAddress,
         pnlUsd: pnlUsdForSlice,
         pnlPercent: gainPercent,
         wasPaper: !this.params.liveTrading,
@@ -571,6 +621,7 @@ export async function manualSellPosition(
     mint,
     name: position.name,
     symbol: position.symbol,
+    creatorAddress: position.creatorAddress,
     pnlUsd,
     pnlPercent: gainPercent,
     wasPaper: !params.liveTrading,

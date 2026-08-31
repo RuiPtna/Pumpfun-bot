@@ -285,6 +285,7 @@ function formatConfig(telegramId: number): string {
     `Market cap accepté : $${p.minMarketCapUsd}-$${p.maxMarketCapUsd}`,
     `Score minimum pour entrer : ${p.minEntryScore}/100`,
     `Concentration holders max : créateur ${p.maxCreatorHoldingPercent}%, plus gros holder ${p.maxTopHolderPercent}%, top 10 ${p.maxTop10HolderPercent}%`,
+    `Achat initial créateur min : ${p.minCreatorInitialBuySol} SOL — Autorités révoquées exigées : ${p.requireRevokedAuthorities ? "🟢 oui" : "🔴 non"}`,
     "",
     "<b>📉 Sorties</b>",
     `Stop-loss : ${p.stopLossPercent}%`,

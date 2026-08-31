@@ -33,6 +33,7 @@ export interface OpenPosition {
   name: string;
   symbol: string;
   bondingCurveKey: string | null;
+  creatorAddress: string | null;
   entryMarketCapUsd: number;
   /** Dernier market cap connu (mis à jour à chaque poll DexScreener), pour afficher le PnL */
   lastKnownMarketCapUsd: number;
@@ -58,6 +59,7 @@ export interface ClosedTrade {
   mint: string;
   name: string;
   symbol: string;
+  creatorAddress: string | null;
   pnlUsd: number;
   pnlPercent: number;
   wasPaper: boolean;
@@ -202,6 +204,18 @@ export function logClosedTrade(entry: ClosedTrade): void {
 
 export function getClosedTrades(telegramId: number): ClosedTrade[] {
   return readDb().closedTrades.filter((t) => t.telegramId === telegramId);
+}
+
+/**
+ * Un créateur qui nous a déjà fait perdre gros par le passé (perte au-delà du seuil,
+ * -50% par défaut) est traité comme un rugueur récidiviste connu — ses futurs tokens
+ * sont automatiquement rejetés, sans dépendre d'un service tiers payant.
+ */
+export function isBlacklistedCreator(telegramId: number, creatorAddress: string, lossThresholdPercent = -50): boolean {
+  const trades = readDb().closedTrades;
+  return trades.some(
+    (t) => t.telegramId === telegramId && t.creatorAddress === creatorAddress && t.pnlPercent <= lossThresholdPercent
+  );
 }
 
 const defaultBotState = (telegramId: number, startingCapitalUsd: number): BotState => ({

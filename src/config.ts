@@ -20,6 +20,10 @@ export interface StrategyParams {
 
   /** % max de la supply que le créateur peut encore détenir avant d'acheter (signal de rug le plus fiable) */
   maxCreatorHoldingPercent: number;
+  /** SOL minimum que le créateur doit avoir investi lui-même à la création (un achat initial trop faible corrèle avec les rugs instantanés) */
+  minCreatorInitialBuySol: number;
+  /** Rejette les tokens dont l'autorité de mint ou de freeze n'est pas révoquée (protection anti-honeypot) */
+  requireRevokedAuthorities: boolean;
   /** % max détenu par le plus gros holder avant d'acheter (rejette si dépassé) */
   maxTopHolderPercent: number;
   /** % max détenu cumulé par les 10 plus gros holders avant d'acheter */
@@ -72,6 +76,8 @@ export const defaultParams: StrategyParams = {
   maxMarketCapUsd: 100000000, // pas de plafond réel — seul le minimum de $10k compte désormais
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 15,
+  minCreatorInitialBuySol: 0.5,
+  requireRevokedAuthorities: true,
   maxTopHolderPercent: 35,
   maxTop10HolderPercent: 70,
 
@@ -114,6 +120,7 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "maxMarketCapUsd",
   "minRealSolInvested",
   "maxCreatorHoldingPercent",
+  "minCreatorInitialBuySol",
   "maxTopHolderPercent",
   "maxTop10HolderPercent",
   "minEntryScore",
@@ -137,4 +144,9 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "reserveSolBalance",
 ];
 
-export const booleanParamKeys: (keyof StrategyParams)[] = ["paperMode", "liveTrading", "pauseFeatureEnabled"];
+export const booleanParamKeys: (keyof StrategyParams)[] = [
+  "paperMode",
+  "liveTrading",
+  "pauseFeatureEnabled",
+  "requireRevokedAuthorities",
+];
