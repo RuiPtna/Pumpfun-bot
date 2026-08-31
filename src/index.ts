@@ -464,7 +464,10 @@ function formatDashboard(telegramId: number): string {
   for (const t of closedTrades) {
     runningCapital += t.pnlUsd;
     peak = Math.max(peak, runningCapital);
-    const drawdown = ((peak - runningCapital) / peak) * 100;
+    // Bornée à 100% : au-delà, ça reflète un désaccord entre ce calcul simplifié (qui rejoue les
+    // trades séquentiellement sur un capital de départ fixe) et le vrai capital simulé qui, lui,
+    // ne peut pas descendre sous 0 — pas une vraie perte de plus de 100%.
+    const drawdown = Math.min(100, ((peak - runningCapital) / peak) * 100);
     maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdown);
   }
 

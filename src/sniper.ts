@@ -212,21 +212,24 @@ export class AutoTrader {
     }
 
     if (this.params.pauseFeatureEnabled && state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
-      if (score < this.params.minScoreAfterPause) {
+      // Le contournement exceptionnel n'est autorisé que pour des tokens ayant de vraies données
+      // de trading (post-migration) — un score élevé calculé sur la seule bonding curve (2 critères
+      // sur 4, sans preuve d'activité réelle) n'est pas une preuve suffisante pour lever une pause.
+      if (score < this.params.minScoreAfterPause || !hasTradeCounts) {
         this.rejectWatch(mint, `bot en pause après pertes consécutives (jusqu'à ${state.pausedUntil})`, score);
         return;
       }
-      this.notify(`⚡ Score exceptionnel (${score}/100) pendant la pause — entrée exceptionnelle autorisée`);
+      this.notify(`⚡ Score exceptionnel (${score}/100, données réelles confirmées) pendant la pause — entrée exceptionnelle autorisée`);
     }
 
     const openPositions = getOpenPositions(this.telegramId);
-    const isPerfectScore = score >= 100;
+    const isPerfectScore = score >= 100 && hasTradeCounts;
     if (openPositions.length >= this.params.maxOpenPositions && !isPerfectScore) {
       this.rejectWatch(mint, "nombre maximum de positions déjà atteint", score);
       return;
     }
     if (isPerfectScore && openPositions.length >= this.params.maxOpenPositions) {
-      this.notify(`🌟 Score parfait (100/100) sur ${symbol} — entrée au-delà de la limite de positions habituelle`);
+      this.notify(`🌟 Score parfait (100/100, données réelles) sur ${symbol} — entrée au-delà de la limite de positions habituelle`);
     }
 
     // Vérification de la concentration des holders — uniquement pertinente APRÈS migration.
