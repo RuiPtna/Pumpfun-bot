@@ -40,6 +40,9 @@ export interface StrategyParams {
   tp4SellPercent: number;
   trailingStopPercent: number; // appliqué sur le runner après TP4 (si non entièrement vendu)
 
+  /** Durée max (minutes) qu'une position peut rester ouverte sans avoir touché SL ni aucun TP — au-delà, fermeture forcée pour libérer le capital */
+  maxHoldMinutes: number;
+
   // Protection du capital
   maxDailyLossPercent: number;
   consecutiveLossesForPause: number;
@@ -63,10 +66,10 @@ export const defaultParams: StrategyParams = {
   positionPercent: 25,
   maxOpenPositions: 2,
 
-  minAgeMinutes: 2,
-  maxAgeMinutes: 180,
+  minAgeMinutes: 4,
+  maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 4 min compte désormais
   minMarketCapUsd: 10000,
-  maxMarketCapUsd: 50000,
+  maxMarketCapUsd: 100000000, // pas de plafond réel — seul le minimum de $10k compte désormais
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 15,
   maxTopHolderPercent: 35,
@@ -74,7 +77,7 @@ export const defaultParams: StrategyParams = {
 
   minEntryScore: 70,
 
-  stopLossPercent: -12,
+  stopLossPercent: -15,
   tp1Percent: 25,
   tp1SellPercent: 35,
   tp2Percent: 50,
@@ -84,6 +87,7 @@ export const defaultParams: StrategyParams = {
   tp4Percent: 200,
   tp4SellPercent: 100, // vend tout le reste à +200%
   trailingStopPercent: 15,
+  maxHoldMinutes: 45,
 
   maxDailyLossPercent: 80,
   consecutiveLossesForPause: 3,
@@ -123,6 +127,7 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "tp4Percent",
   "tp4SellPercent",
   "trailingStopPercent",
+  "maxHoldMinutes",
   "maxDailyLossPercent",
   "consecutiveLossesForPause",
   "pauseDurationMinutes",

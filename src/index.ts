@@ -268,6 +268,7 @@ function formatConfig(telegramId: number): string {
     `Stop-loss : ${p.stopLossPercent}%`,
     `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}%`,
     `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,
+    `Durée max sans TP touché : ${p.maxHoldMinutes} min`,
     `Perte quotidienne max : ${p.maxDailyLossPercent}%`,
     `Pause après pertes : ${p.pauseFeatureEnabled ? "🟢 activée" : "🔴 désactivée"} (${p.consecutiveLossesForPause} pertes consécutives, ${p.pauseDurationMinutes} min, reprise si score ≥ ${p.minScoreAfterPause})`,
     `Slippage max : ${p.maxSlippagePercent}% — Priority fee : ${p.priorityFeeSol} SOL — Réserve : ${p.reserveSolBalance} SOL`,
@@ -532,7 +533,9 @@ function formatDashboard(telegramId: number): string {
     `Max drawdown : -${maxDrawdownPercent.toFixed(1)}%`,
     `Tokens scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
     `Pertes consécutives actuelles : ${state.consecutiveLosses}`,
-    state.pausedUntil ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}` : "▶️ Actif",
+    state.pausedUntil && params.pauseFeatureEnabled
+      ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}`
+      : "▶️ Actif",
     params.liveTrading ? "\n⚠️ En mode LIVE, le cash affiché ici reste le compteur paper — utilise /balance pour ton vrai solde SOL." : "",
   ]
     .filter(Boolean)

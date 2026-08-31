@@ -110,7 +110,10 @@ export class AutoTrader {
     this.evalIntervals.set(mint, interval);
     setTimeout(() => this.evaluateWatch(mint), 3_000);
 
-    setTimeout(() => this.finalizeWatchIfExpired(mint), (this.params.maxAgeMinutes * 60 + 30) * 1000);
+    // Plafonné à ~24 jours : au-delà, setTimeout de Node.js déborde et se déclenche immédiatement
+    // au lieu d'attendre (limite technique des entiers 32 bits), ce qui casserait un "sans plafond".
+    const expiryDelayMs = Math.min((this.params.maxAgeMinutes * 60 + 30) * 1000, 2_000_000_000);
+    setTimeout(() => this.finalizeWatchIfExpired(mint), expiryDelayMs);
   }
 
   /** Lit le market cap : priorité au compte on-chain de la bonding curve, sinon DexScreener après migration. */
@@ -383,6 +386,19 @@ export class AutoTrader {
 
     if (gainPercent <= this.params.stopLossPercent) {
       await this.exitPosition(position, 100, gainPercent, `🛑 Stop-loss déclenché (${gainPercent.toFixed(1)}%)`);
+      return;
+    }
+
+    // Position stagnante : n'a touché ni SL ni aucun TP après le délai max — on ferme pour
+    // libérer le capital et la place dans maxOpenPositions plutôt que d'attendre indéfiniment.
+    const ageMinutes = (Date.now() - new Date(position.openedAt).getTime()) / 60000;
+    if (position.takeProfitLevelsHit.length === 0 && ageMinutes >= this.params.maxHoldMinutes) {
+      await this.exitPosition(
+        position,
+        100,
+        gainPercent,
+        `⏱️ Position stagnante depuis ${Math.round(ageMinutes)} min (${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}%) — clôturée pour libérer le capital`
+      );
       return;
     }
 
