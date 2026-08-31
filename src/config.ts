@@ -60,7 +60,7 @@ export interface StrategyParams {
 
 export const defaultParams: StrategyParams = {
   startingCapitalUsd: 20,
-  positionPercent: 15,
+  positionPercent: 25,
   maxOpenPositions: 2,
 
   minAgeMinutes: 2,
@@ -89,9 +89,9 @@ export const defaultParams: StrategyParams = {
   consecutiveLossesForPause: 3,
   pauseDurationMinutes: 30,
   minScoreAfterPause: 80,
-  pauseFeatureEnabled: true,
+  pauseFeatureEnabled: false,
 
-  maxSlippagePercent: 15,
+  maxSlippagePercent: 6,
   priorityFeeSol: 0.0005,
   reserveSolBalance: 0.05,
 
