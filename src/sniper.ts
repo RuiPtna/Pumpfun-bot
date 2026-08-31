@@ -157,7 +157,7 @@ export class AutoTrader {
     const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
     if (score.total < this.params.minEntryScore) return;
 
-    await this.tryEnter(mint, watch.name, watch.symbol, watch.bondingCurveKey, reading.marketCapUsd, score.total);
+    await this.tryEnter(mint, watch.name, watch.symbol, watch.bondingCurveKey, reading.marketCapUsd, score.total, reading.hasTradeCounts);
   }
 
   private finalizeWatchIfExpired(mint: string): void {
@@ -188,7 +188,8 @@ export class AutoTrader {
     symbol: string,
     bondingCurveKey: string | null,
     marketCapUsd: number,
-    score: number
+    score: number,
+    hasTradeCounts: boolean
   ): Promise<void> {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     const solPriceUsd = await getSolPriceUsd();
@@ -228,30 +229,31 @@ export class AutoTrader {
       this.notify(`🌟 Score parfait (100/100) sur ${symbol} — entrée au-delà de la limite de positions habituelle`);
     }
 
-    // Vérification de la concentration des holders — gratuite via RPC, mais on ne l'appelle
-    // qu'ici (juste avant l'achat) plutôt qu'à chaque cycle d'évaluation, pour limiter le nombre
-    // d'appels RPC aux seuls candidats qui ont déjà passé le score.
-    const holderData = await fetchHolderConcentration(this.connection, mint);
-    if (holderData) {
-      if (holderData.topHolderPercent > this.params.maxTopHolderPercent) {
-        this.rejectWatch(
-          mint,
-          `plus gros holder détient ${holderData.topHolderPercent.toFixed(0)}% (max ${this.params.maxTopHolderPercent}%)`,
-          score
-        );
-        return;
-      }
-      if (holderData.top10Percent > this.params.maxTop10HolderPercent) {
-        this.rejectWatch(
-          mint,
-          `top 10 holders détiennent ${holderData.top10Percent.toFixed(0)}% (max ${this.params.maxTop10HolderPercent}%)`,
-          score
-        );
-        return;
+    // Vérification de la concentration des holders — uniquement pertinente APRÈS migration.
+    // Tant que le token est sur la bonding curve, celle-ci détient elle-même la grande majorité
+    // de la supply (c'est le mécanisme même de la curve, pas un signal de rug) : appliquer ce
+    // filtre à ce stade rejetterait quasiment tous les tokens non gradués.
+    if (hasTradeCounts) {
+      const holderData = await fetchHolderConcentration(this.connection, mint);
+      if (holderData) {
+        if (holderData.topHolderPercent > this.params.maxTopHolderPercent) {
+          this.rejectWatch(
+            mint,
+            `plus gros holder détient ${holderData.topHolderPercent.toFixed(0)}% (max ${this.params.maxTopHolderPercent}%)`,
+            score
+          );
+          return;
+        }
+        if (holderData.top10Percent > this.params.maxTop10HolderPercent) {
+          this.rejectWatch(
+            mint,
+            `top 10 holders détiennent ${holderData.top10Percent.toFixed(0)}% (max ${this.params.maxTop10HolderPercent}%)`,
+            score
+          );
+          return;
+        }
       }
     }
-    // Si la donnée n'est pas disponible (RPC lent, etc.), on ne bloque pas l'achat pour autant —
-    // mieux vaut un candidat non vérifié sur ce point précis qu'un bot qui n'achète plus jamais rien.
 
     const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
     saveBotState(this.telegramId, state);
