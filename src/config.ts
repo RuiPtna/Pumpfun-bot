@@ -18,6 +18,8 @@ export interface StrategyParams {
   /** SOL réellement investi minimum dans la bonding curve avant d'acheter (filtre les tokens morts) */
   minRealSolInvested: number;
 
+  /** % max de la supply que le créateur peut encore détenir avant d'acheter (signal de rug le plus fiable) */
+  maxCreatorHoldingPercent: number;
   /** % max détenu par le plus gros holder avant d'acheter (rejette si dépassé) */
   maxTopHolderPercent: number;
   /** % max détenu cumulé par les 10 plus gros holders avant d'acheter */
@@ -66,16 +68,17 @@ export const defaultParams: StrategyParams = {
   minMarketCapUsd: 10000,
   maxMarketCapUsd: 50000,
   minRealSolInvested: 1,
+  maxCreatorHoldingPercent: 15,
   maxTopHolderPercent: 35,
   maxTop10HolderPercent: 70,
 
   minEntryScore: 70,
 
-  stopLossPercent: -18,
-  tp1Percent: 30,
-  tp1SellPercent: 25,
+  stopLossPercent: -12,
+  tp1Percent: 25,
+  tp1SellPercent: 35,
   tp2Percent: 50,
-  tp2SellPercent: 25,
+  tp2SellPercent: 20,
   tp3Percent: 100,
   tp3SellPercent: 30,
   tp4Percent: 200,
@@ -106,6 +109,7 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "minMarketCapUsd",
   "maxMarketCapUsd",
   "minRealSolInvested",
+  "maxCreatorHoldingPercent",
   "maxTopHolderPercent",
   "maxTop10HolderPercent",
   "minEntryScore",

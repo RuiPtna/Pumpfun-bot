@@ -7,7 +7,7 @@ import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./s
 import { fetchDexScreenerData } from "./dexscreener";
 import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
-import { fetchHolderConcentration } from "./holderAnalysis";
+import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
   logTrade,
@@ -88,16 +88,22 @@ export class AutoTrader {
       return;
     }
     if (data.txType === "create" && data.mint) {
-      this.beginWatching(data.mint, data.name ?? "?", data.symbol ?? "?", data.bondingCurveKey ?? null);
+      this.beginWatching(data.mint, data.name ?? "?", data.symbol ?? "?", data.bondingCurveKey ?? null, data.traderPublicKey ?? null);
     }
   }
 
-  private beginWatching(mint: string, name: string, symbol: string, bondingCurveKey: string | null): void {
+  private beginWatching(
+    mint: string,
+    name: string,
+    symbol: string,
+    bondingCurveKey: string | null,
+    creatorAddress: string | null
+  ): void {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     state.tokensScanned += 1;
     saveBotState(this.telegramId, state);
 
-    const watch = createTokenWatch(mint, name, symbol, bondingCurveKey, Date.now());
+    const watch = createTokenWatch(mint, name, symbol, bondingCurveKey, creatorAddress, Date.now());
     this.watches.set(mint, watch);
 
     const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
@@ -157,7 +163,7 @@ export class AutoTrader {
     const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
     if (score.total < this.params.minEntryScore) return;
 
-    await this.tryEnter(mint, watch.name, watch.symbol, watch.bondingCurveKey, reading.marketCapUsd, score.total, reading.hasTradeCounts);
+    await this.tryEnter(mint, watch.name, watch.symbol, watch.bondingCurveKey, watch.creatorAddress, reading.marketCapUsd, score.total, reading.hasTradeCounts);
   }
 
   private finalizeWatchIfExpired(mint: string): void {
@@ -187,12 +193,28 @@ export class AutoTrader {
     name: string,
     symbol: string,
     bondingCurveKey: string | null,
+    creatorAddress: string | null,
     marketCapUsd: number,
     score: number,
     hasTradeCounts: boolean
   ): Promise<void> {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     const solPriceUsd = await getSolPriceUsd();
+
+    // Vérification du % détenu par le créateur — le signal de rug le plus fiable, applicable
+    // à tout moment (avant ou après migration), contrairement à la concentration globale des
+    // holders qui n'a de sens qu'une fois le token sorti de la bonding curve.
+    if (creatorAddress) {
+      const creatorHoldingPercent = await fetchCreatorHoldingPercent(this.connection, mint, creatorAddress);
+      if (creatorHoldingPercent !== null && creatorHoldingPercent > this.params.maxCreatorHoldingPercent) {
+        this.rejectWatch(
+          mint,
+          `créateur détient encore ${creatorHoldingPercent.toFixed(0)}% (max ${this.params.maxCreatorHoldingPercent}%)`,
+          score
+        );
+        return;
+      }
+    }
 
     const today = new Date().toISOString().slice(0, 10);
     if (state.dailyDate !== today) {

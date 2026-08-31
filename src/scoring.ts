@@ -5,6 +5,7 @@ export interface TokenWatch {
   name: string;
   symbol: string;
   bondingCurveKey: string | null;
+  creatorAddress: string | null;
   createdAt: number;
   mcHistory: { t: number; marketCapUsd: number }[];
   lastLiquidityUsd: number;
@@ -19,6 +20,7 @@ export function createTokenWatch(
   name: string,
   symbol: string,
   bondingCurveKey: string | null,
+  creatorAddress: string | null,
   createdAt: number
 ): TokenWatch {
   return {
@@ -26,6 +28,7 @@ export function createTokenWatch(
     name,
     symbol,
     bondingCurveKey,
+    creatorAddress,
     createdAt,
     mcHistory: [],
     lastLiquidityUsd: 0,

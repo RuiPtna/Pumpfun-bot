@@ -262,7 +262,7 @@ function formatConfig(telegramId: number): string {
     `Âge accepté : ${p.minAgeMinutes}-${p.maxAgeMinutes} min`,
     `Market cap accepté : $${p.minMarketCapUsd}-$${p.maxMarketCapUsd}`,
     `Score minimum pour entrer : ${p.minEntryScore}/100`,
-    `Concentration holders max : plus gros holder ${p.maxTopHolderPercent}%, top 10 ${p.maxTop10HolderPercent}%`,
+    `Concentration holders max : créateur ${p.maxCreatorHoldingPercent}%, plus gros holder ${p.maxTopHolderPercent}%, top 10 ${p.maxTop10HolderPercent}%`,
     `Stop-loss : ${p.stopLossPercent}%`,
     `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}%`,
     `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,

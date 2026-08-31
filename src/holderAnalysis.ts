@@ -6,12 +6,37 @@ export interface HolderConcentration {
 }
 
 /**
- * Utilise getTokenLargestAccounts + getTokenSupply — deux méthodes RPC Solana
- * standard et gratuites (aucun indexeur payant nécessaire). Retourne null si
- * la donnée n'est pas disponible (RPC lent, token trop récent, etc.) — dans
- * ce cas, mieux vaut ne pas bloquer un achat sur une absence de donnée que
- * de risquer de tout rejeter en permanence.
+ * Vérifie le % de la supply encore détenu par le créateur du token — l'un des
+ * signaux de rug pull les plus fiables. Utilise getParsedTokenAccountsByOwner
+ * (RPC standard, gratuit) sur l'adresse exacte du créateur, capturée à la
+ * création du token — donc pas faussé par le compte de la bonding curve
+ * elle-même, contrairement à un simple "plus gros holder du mint".
  */
+export async function fetchCreatorHoldingPercent(
+  connection: Connection,
+  mint: string,
+  creatorAddress: string
+): Promise<number | null> {
+  try {
+    const [supplyInfo, creatorAccounts] = await Promise.all([
+      connection.getTokenSupply(new PublicKey(mint)),
+      connection.getParsedTokenAccountsByOwner(new PublicKey(creatorAddress), { mint: new PublicKey(mint) }),
+    ]);
+
+    const totalSupply = supplyInfo.value.uiAmount;
+    if (!totalSupply || totalSupply <= 0) return null;
+
+    const creatorBalance = creatorAccounts.value.reduce(
+      (sum, acc) => sum + (acc.account.data.parsed?.info?.tokenAmount?.uiAmount ?? 0),
+      0
+    );
+
+    return (creatorBalance / totalSupply) * 100;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchHolderConcentration(
   connection: Connection,
   mint: string
