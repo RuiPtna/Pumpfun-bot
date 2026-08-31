@@ -471,10 +471,24 @@ function formatDashboard(telegramId: number): string {
     maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdown);
   }
 
+  const openPositionsValueUsd = openPositions.reduce((sum, p) => {
+    if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) {
+      // Pas encore de prix connu pour ce token — on compte le coût d'entrée par défaut,
+      // plus juste que de l'ignorer complètement dans le total.
+      return sum + p.positionSizeUsd * (p.remainingPercent / 100);
+    }
+    const gainPercent = ((p.lastKnownMarketCapUsd - p.entryMarketCapUsd) / p.entryMarketCapUsd) * 100;
+    const costBasisRemaining = p.positionSizeUsd * (p.remainingPercent / 100);
+    return sum + costBasisRemaining * (1 + gainPercent / 100);
+  }, 0);
+  const totalPortfolioValue = state.paperCapitalUsd + openPositionsValueUsd;
+
   return [
     `📊 DASHBOARD — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
     "",
-    `Capital simulé : $${state.paperCapitalUsd.toFixed(2)}`,
+    `Valeur totale du portefeuille : $${totalPortfolioValue.toFixed(2)}`,
+    `— dont cash disponible : $${state.paperCapitalUsd.toFixed(2)}`,
+    `— dont positions ouvertes : $${openPositionsValueUsd.toFixed(2)}`,
     `PnL total : ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`,
     `Positions ouvertes : ${openPositions.length}/${params.maxOpenPositions}`,
     `Trades clôturés : ${closedTrades.length} — Win rate : ${winRate.toFixed(0)}%`,
@@ -483,7 +497,10 @@ function formatDashboard(telegramId: number): string {
     `Tokens scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
     `Pertes consécutives actuelles : ${state.consecutiveLosses}`,
     state.pausedUntil ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}` : "▶️ Actif",
-  ].join("\n");
+    params.liveTrading ? "\n⚠️ En mode LIVE, le cash affiché ici reste le compteur paper — utilise /balance pour ton vrai solde SOL." : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function backToMenuButton() {

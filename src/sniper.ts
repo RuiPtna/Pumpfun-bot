@@ -23,7 +23,7 @@ import {
 
 const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : uniquement subscribeNewToken ici
 const WATCH_POLL_INTERVAL_MS = 20_000;
-const POSITION_POLL_INTERVAL_MS = 15_000;
+const POSITION_POLL_INTERVAL_MS = 5_000; // réduit de 15s pour réagir plus vite sur les positions ouvertes
 
 interface MarketCapReading {
   marketCapUsd: number;
@@ -471,7 +471,7 @@ export class AutoTrader {
       }
 
       this.notify(
-        `✅ Vente exécutée (${sellPercent}% de la position).${
+        `✅ Vente exécutée sur ${position.symbol} (${position.name}) — ${sellPercent}% de la position.${
           this.params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)"
         }`
       );
