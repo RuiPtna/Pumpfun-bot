@@ -109,13 +109,13 @@ bot.command("help", (ctx) => {
       "📖 Commandes complètes (pour ce qui n'a pas de bouton) :",
       "",
       "/wallet — voir ou créer ton wallet",
-      "/withdraw <adresse> <montant|all> — retirer du SOL vers une autre adresse",
+      "/withdraw [adresse] [montant|all] — retirer du SOL vers une autre adresse",
       "/exportkey — exporter la clé privée (Phantom, Backpack...)",
-      "/buy <mint> <montant_sol> — acheter manuellement",
-      "/sell <mint> <pourcentage|montant> — vendre manuellement",
+      "/buy [mint] [montant_sol] — acheter manuellement",
+      "/sell [mint] [pourcentage|montant] — vendre manuellement",
       "/pausefeature on|off — activer/désactiver la pause automatique après pertes",
       "/resume — lever une pause en cours immédiatement",
-      "/set <clé> <valeur> — modifier un paramètre",
+      "/set [clé] [valeur] — modifier un paramètre",
       "/live on|off — activer/désactiver le trading RÉEL (danger)",
       "/menu — réafficher les boutons du menu principal",
     ].join("\n")
@@ -200,7 +200,7 @@ bot.command("withdraw", async (ctx) => {
   const [, address, amountStr] = ctx.message.text.split(" ").filter(Boolean);
 
   if (!address || !amountStr) {
-    ctx.reply("Usage : /withdraw <adresse_solana> <montant_en_sol|all>");
+    ctx.reply("Usage : /withdraw [adresse_solana] [montant_en_sol|all]");
     return;
   }
 
@@ -215,7 +215,7 @@ bot.command("withdraw", async (ctx) => {
 bot.command("buy", async (ctx) => {
   const [, mint, amountStr] = ctx.message.text.split(" ").filter(Boolean);
   if (!mint || !amountStr) {
-    ctx.reply("Usage : /buy <adresse_du_token> <montant_en_SOL>");
+    ctx.reply("Usage : /buy [adresse_du_token] [montant_en_SOL]");
     return;
   }
   const amountSol = Number(amountStr);
@@ -242,7 +242,7 @@ bot.command("buy", async (ctx) => {
 bot.command("sell", async (ctx) => {
   const [, mint, amountStr] = ctx.message.text.split(" ").filter(Boolean);
   if (!mint || !amountStr) {
-    ctx.reply("Usage : /sell <adresse_du_token> <pourcentage_ou_montant>");
+    ctx.reply("Usage : /sell [adresse_du_token] [pourcentage_ou_montant]");
     return;
   }
   const wallet = getOrCreateWallet(ctx.from.id);
@@ -283,7 +283,7 @@ function formatConfig(telegramId: number): string {
     `Pause après pertes : ${p.pauseFeatureEnabled ? "🟢 activée" : "🔴 désactivée"} (${p.consecutiveLossesForPause} pertes consécutives, ${p.pauseDurationMinutes} min, reprise si score ≥ ${p.minScoreAfterPause})`,
     `Slippage max : ${p.maxSlippagePercent}% — Priority fee : ${p.priorityFeeSol} SOL — Réserve : ${p.reserveSolBalance} SOL`,
     "",
-    "Modifier : /set <clé> <valeur>",
+    "Modifier : /set [clé] [valeur]",
     `Clés numériques : ${numericParamKeys.join(", ")}`,
     `Clés on/off : ${booleanParamKeys.join(", ")} (via /live et le mode paper)`,
   ].join("\n");
@@ -298,7 +298,7 @@ bot.command("set", (ctx) => {
   const p = getParams(ctx.from.id);
 
   if (!key || !valueStr || !numericParamKeys.includes(key as keyof StrategyParams)) {
-    ctx.reply(`Usage : /set <clé> <valeur>\nClés valides : ${numericParamKeys.join(", ")}`);
+    ctx.reply(`Usage : /set [clé] [valeur]\nClés valides : ${numericParamKeys.join(", ")}`);
     return;
   }
   const value = Number(valueStr);
