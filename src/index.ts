@@ -128,7 +128,9 @@ bot.command("menu", (ctx) => {
 
 bot.command("wallet", (ctx) => {
   const wallet = getOrCreateWallet(ctx.from.id);
-  ctx.reply(`🔑 Ton adresse wallet :\n${wallet.publicKey}\n\nDépose du SOL dessus pour trader en live.`);
+  ctx.reply(`🔑 Ton adresse wallet :\n<code>${wallet.publicKey}</code>\n\nDépose du SOL dessus pour trader en live.`, {
+    parse_mode: "HTML",
+  });
 });
 
 async function formatBalance(telegramId: number): Promise<string> {
@@ -160,14 +162,15 @@ bot.command("exportkey", (ctx) => {
     [
       "🔑 Voici la clé privée de ton wallet (format base58, importable dans Phantom, Backpack, etc.) :",
       "",
-      privateKey,
+      `<code>${privateKey}</code>`,
       "",
-      "⚠️ ATTENTION :",
+      "⚠️ <b>ATTENTION</b> :",
       "— Quiconque a cette clé a un contrôle TOTAL sur ce wallet, y compris tous les fonds dessus.",
       "— Ne la partage jamais, ne la colle nulle part d'autre qu'une appli wallet de confiance.",
       "— Supprime ce message une fois la clé copiée en lieu sûr.",
       "— Si tu penses qu'elle a fuité, transfère immédiatement tes fonds vers un nouveau wallet.",
-    ].join("\n")
+    ].join("\n"),
+    { parse_mode: "HTML" }
   );
 });
 
@@ -193,7 +196,7 @@ async function performWithdrawal(telegramId: number, address: string, amountStr:
   }
 
   const signature = await sendSol(connection, signer, address, amountSol);
-  return `✅ Retrait de ${amountSol.toFixed(4)} SOL effectué !\nhttps://solscan.io/tx/${signature}`;
+  return `✅ Retrait de ${amountSol.toFixed(4)} SOL effectué !\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>`;
 }
 
 bot.command("withdraw", async (ctx) => {
@@ -204,11 +207,11 @@ bot.command("withdraw", async (ctx) => {
     return;
   }
 
-  await ctx.reply(`⏳ Envoi vers ${address}...`);
+  await ctx.reply(`⏳ Envoi vers <code>${address}</code>...`, { parse_mode: "HTML" });
   try {
-    ctx.reply(await performWithdrawal(ctx.from.id, address, amountStr));
+    ctx.reply(await performWithdrawal(ctx.from.id, address, amountStr), { parse_mode: "HTML" });
   } catch (err) {
-    ctx.reply(`❌ Échec du retrait : ${(err as Error).message}`);
+    ctx.reply(`❌ Échec du retrait : ${escapeHtml((err as Error).message)}`);
   }
 });
 
@@ -226,16 +229,16 @@ bot.command("buy", async (ctx) => {
   const wallet = getOrCreateWallet(ctx.from.id);
   const signer = loadKeypair(wallet);
   try {
-    await ctx.reply(`⏳ Achat de ${amountSol} SOL sur ${mint} en cours...`);
+    await ctx.reply(`⏳ Achat de ${amountSol} SOL sur <code>${mint}</code> en cours...`, { parse_mode: "HTML" });
     const signature = await executeTrade(connection, signer, {
       action: "buy",
       mint,
       amount: amountSol,
       denominatedInSol: true,
     });
-    ctx.reply(`✅ Achat exécuté !\nhttps://solscan.io/tx/${signature}`);
+    ctx.reply(`✅ Achat exécuté !\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>`, { parse_mode: "HTML" });
   } catch (err) {
-    ctx.reply(`❌ Échec de l'achat : ${(err as Error).message}`);
+    ctx.reply(`❌ Échec de l'achat : ${escapeHtml((err as Error).message)}`);
   }
 });
 
@@ -249,7 +252,7 @@ bot.command("sell", async (ctx) => {
   const signer = loadKeypair(wallet);
   const isPercent = amountStr.trim().endsWith("%");
   try {
-    await ctx.reply(`⏳ Vente de ${amountStr} sur ${mint} en cours...`);
+    await ctx.reply(`⏳ Vente de ${amountStr} sur <code>${mint}</code> en cours...`, { parse_mode: "HTML" });
     const result = await sellWithFallback(
       connection,
       signer,
@@ -259,28 +262,41 @@ bot.command("sell", async (ctx) => {
       0.0005
     );
     const fallbackNote = result.usedFallback ? " (via Jupiter, PumpPortal a échoué)" : "";
-    ctx.reply(`✅ Vente exécutée !${fallbackNote}\nhttps://solscan.io/tx/${result.signature}`);
+    ctx.reply(`✅ Vente exécutée !${fallbackNote}\n<a href="https://solscan.io/tx/${result.signature}">Voir la transaction</a>`, {
+      parse_mode: "HTML",
+    });
   } catch (err) {
-    ctx.reply(`❌ Échec de la vente (PumpPortal et Jupiter ont tous les deux échoué) : ${(err as Error).message}`);
+    ctx.reply(`❌ Échec de la vente (PumpPortal et Jupiter ont tous les deux échoué) : ${escapeHtml((err as Error).message)}`);
   }
 });
 
 function formatConfig(telegramId: number): string {
   const p = getParams(telegramId);
   return [
+    `⚙️ <b>Configuration</b>`,
     `Mode : ${p.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)"}`,
+    "",
+    "<b>💰 Capital & positions</b>",
     `Capital de départ : $${p.startingCapitalUsd} — Position : ${p.positionPercent}% du capital`,
     `Positions max : ${p.maxOpenPositions}`,
+    "",
+    "<b>🎯 Filtres d'entrée</b>",
     `Âge accepté : ${p.minAgeMinutes}-${p.maxAgeMinutes} min`,
     `Market cap accepté : $${p.minMarketCapUsd}-$${p.maxMarketCapUsd}`,
     `Score minimum pour entrer : ${p.minEntryScore}/100`,
     `Concentration holders max : créateur ${p.maxCreatorHoldingPercent}%, plus gros holder ${p.maxTopHolderPercent}%, top 10 ${p.maxTop10HolderPercent}%`,
+    "",
+    "<b>📉 Sorties</b>",
     `Stop-loss : ${p.stopLossPercent}%`,
     `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}%`,
     `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,
     `Durée max sans TP touché : ${p.maxHoldMinutes} min`,
+    "",
+    "<b>🛡️ Sécurité</b>",
     `Perte quotidienne max : ${p.maxDailyLossPercent}%`,
     `Pause après pertes : ${p.pauseFeatureEnabled ? "🟢 activée" : "🔴 désactivée"} (${p.consecutiveLossesForPause} pertes consécutives, ${p.pauseDurationMinutes} min, reprise si score ≥ ${p.minScoreAfterPause})`,
+    "",
+    "<b>⚡ Exécution</b>",
     `Slippage max : ${p.maxSlippagePercent}% — Priority fee : ${p.priorityFeeSol} SOL — Réserve : ${p.reserveSolBalance} SOL`,
     "",
     "Modifier : /set [clé] [valeur]",
@@ -395,7 +411,7 @@ function formatPnl(telegramId: number): string {
   }, 0);
 
   return [
-    "📊 PnL des positions ouvertes :",
+    "📊 <b>PnL des positions ouvertes</b>",
     "",
     ...lines,
     "",
@@ -420,7 +436,7 @@ function formatRejected(telegramId: number): string {
     .slice()
     .reverse()
     .map((r) => `${r.mint.slice(0, 8)}... — ${r.reason}${r.score ? ` (score ${r.score}/100)` : ""}`);
-  return ["🚫 Derniers tokens rejetés :", "", ...lines].join("\n");
+  return ["🚫 <b>Derniers tokens rejetés</b>", "", ...lines].join("\n");
 }
 
 /** Regroupe un motif de rejet précis (avec ses chiffres variables) sous une catégorie stable. */
@@ -460,7 +476,7 @@ function formatRejectedStats(telegramId: number): string {
   const total = rejected.length;
   const lines = sorted.map(([label, count]) => `${label} : ${count} (${((count / total) * 100).toFixed(0)}%)`);
 
-  return [`📊 Motifs de rejet — ${total} tokens au total`, "", ...lines].join("\n");
+  return [`📊 <b>Motifs de rejet</b> — ${total} tokens au total`, "", ...lines].join("\n");
 }
 
 function formatHistory(telegramId: number, limit = 20): string {
@@ -478,7 +494,7 @@ function formatHistory(telegramId: number, limit = 20): string {
     return `${emoji} ${mode} <b>${escapeHtml(t.symbol)}</b> (${escapeHtml(t.name)}) — <b>${t.pnlPercent >= 0 ? "+" : ""}${t.pnlPercent.toFixed(1)}%</b> (${sign}$${t.pnlUsd.toFixed(2)}) — ${date}`;
   });
 
-  return [`📜 Historique des ${trades.length} derniers trades :`, "", ...lines].join("\n");
+  return [`📜 <b>Historique</b> des ${trades.length} derniers trades`, "", ...lines].join("\n");
 }
 
 function historyKeyboard() {
@@ -696,7 +712,7 @@ bot.action("menu_pnl", async (ctx) => {
 });
 
 bot.action(/^sell_(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
+  await ctx.answerCbQuery("⏳ Vente en cours...");
   const telegramId = ctx.from!.id;
   const mint = ctx.match[1];
 
@@ -704,13 +720,14 @@ bot.action(/^sell_(.+)$/, async (ctx) => {
   const signer = loadKeypair(wallet);
   const params = getParams(telegramId);
 
-  await ctx.reply(`⏳ Vente en cours sur ${mint.slice(0, 8)}...`);
   try {
     const signature = await manualSellPosition(telegramId, mint, connection, signer, params);
-    const note = params.liveTrading ? `\nhttps://solscan.io/tx/${signature}` : " (paper)";
-    await ctx.reply(`✅ Position vendue intégralement.${note}`);
+    const note = params.liveTrading
+      ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>`
+      : " (paper)";
+    await ctx.reply(`✅ Position vendue intégralement.${note}`, { parse_mode: "HTML" });
   } catch (err) {
-    await ctx.reply(`❌ Échec de la vente : ${(err as Error).message}`);
+    await ctx.reply(`❌ Échec de la vente : ${escapeHtml((err as Error).message)}`);
   }
 
   // Rafraîchit l'affichage du PnL pour refléter la position fermée
@@ -730,7 +747,10 @@ bot.action("menu_balance", async (ctx) => {
 bot.action("wallet_deposit", async (ctx) => {
   await ctx.answerCbQuery();
   const wallet = getOrCreateWallet(ctx.from!.id);
-  ctx.reply(`📥 Adresse de dépôt :\n${wallet.publicKey}\n\nEnvoie du SOL directement sur cette adresse depuis n'importe quel wallet ou exchange.`);
+  ctx.reply(
+    `📥 Adresse de dépôt :\n<code>${wallet.publicKey}</code>\n\nEnvoie du SOL directement sur cette adresse depuis n'importe quel wallet ou exchange.`,
+    { parse_mode: "HTML" }
+  );
 });
 
 bot.action("wallet_withdraw_start", async (ctx) => {
@@ -798,11 +818,11 @@ bot.on("text", async (ctx) => {
       return;
     }
 
-    await ctx.reply(`⏳ Envoi vers ${address}...`);
+    await ctx.reply(`⏳ Envoi vers <code>${address}</code>...`, { parse_mode: "HTML" });
     try {
-      ctx.reply(await performWithdrawal(telegramId, address, text));
+      ctx.reply(await performWithdrawal(telegramId, address, text), { parse_mode: "HTML" });
     } catch (err) {
-      ctx.reply(`❌ Échec du retrait : ${(err as Error).message}`);
+      ctx.reply(`❌ Échec du retrait : ${escapeHtml((err as Error).message)}`);
     }
   }
 });

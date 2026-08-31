@@ -8,6 +8,7 @@ export interface TokenWatch {
   creatorAddress: string | null;
   createdAt: number;
   mcHistory: { t: number; marketCapUsd: number }[];
+  realSolHistory: { t: number; realSol: number }[];
   lastLiquidityUsd: number;
   lastBuys5m: number;
   lastSells5m: number;
@@ -31,6 +32,7 @@ export function createTokenWatch(
     creatorAddress,
     createdAt,
     mcHistory: [],
+    realSolHistory: [],
     lastLiquidityUsd: 0,
     lastBuys5m: 0,
     lastSells5m: 0,
@@ -57,26 +59,61 @@ export function scoreToken(watch: TokenWatch, currentMarketCapUsd: number, hasTr
   const reasons: string[] = [];
 
   // --- Momentum ---
+  // Post-migration : le prix DexScreener reflète du vrai trading AMM, fiable tel quel.
+  // Pré-migration : le prix seul peut être trompeur (quelques transactions suffisent à le
+  // faire bouger sur la bonding curve). On utilise plutôt la croissance du SOL RÉELLEMENT
+  // investi (realSolReserves) — cette valeur n'augmente que si de vrais acheteurs déposent
+  // de l'argent, et diminue si des vendeurs retirent — donc un bien meilleur indicateur de
+  // pression d'achat organique qu'une simple variation de prix.
   let momentum = 0;
   const momentumMax = hasTradeCounts ? 35 : 55;
-  if (watch.mcHistory.length >= 2) {
-    const first = watch.mcHistory[0].marketCapUsd;
-    const growthPercent = ((currentMarketCapUsd - first) / first) * 100;
 
-    if (growthPercent > 20 && growthPercent < 300) {
-      momentum = momentumMax;
-      reasons.push(`Momentum sain (+${growthPercent.toFixed(0)}%)`);
-    } else if (growthPercent >= 300) {
-      momentum = Math.round(momentumMax * 0.3);
-      reasons.push(`Pump vertical déjà avancé (+${growthPercent.toFixed(0)}%) — entrée risquée`);
-    } else if (growthPercent > 0) {
-      momentum = Math.round(momentumMax * 0.4);
-      reasons.push(`Croissance faible (+${growthPercent.toFixed(0)}%)`);
+  if (hasTradeCounts) {
+    if (watch.mcHistory.length >= 2) {
+      const first = watch.mcHistory[0].marketCapUsd;
+      const growthPercent = ((currentMarketCapUsd - first) / first) * 100;
+
+      if (growthPercent > 20 && growthPercent < 300) {
+        momentum = momentumMax;
+        reasons.push(`Momentum sain (+${growthPercent.toFixed(0)}%)`);
+      } else if (growthPercent >= 300) {
+        momentum = Math.round(momentumMax * 0.3);
+        reasons.push(`Pump vertical déjà avancé (+${growthPercent.toFixed(0)}%) — entrée risquée`);
+      } else if (growthPercent > 0) {
+        momentum = Math.round(momentumMax * 0.4);
+        reasons.push(`Croissance faible (+${growthPercent.toFixed(0)}%)`);
+      } else {
+        reasons.push(`Market cap en baisse (${growthPercent.toFixed(0)}%)`);
+      }
     } else {
-      reasons.push(`Market cap en baisse (${growthPercent.toFixed(0)}%)`);
+      reasons.push("Pas assez d'historique pour juger le momentum");
     }
   } else {
-    reasons.push("Pas assez d'historique pour juger le momentum");
+    if (watch.realSolHistory.length >= 2) {
+      const first = watch.realSolHistory[0].realSol;
+      const last = watch.realSolHistory[watch.realSolHistory.length - 1].realSol;
+
+      if (first > 0) {
+        const growthPercent = ((last - first) / first) * 100;
+
+        if (growthPercent > 15 && growthPercent < 400) {
+          momentum = momentumMax;
+          reasons.push(`SOL réellement investi en hausse saine (+${growthPercent.toFixed(0)}%)`);
+        } else if (growthPercent >= 400) {
+          momentum = Math.round(momentumMax * 0.3);
+          reasons.push(`Afflux de SOL très rapide (+${growthPercent.toFixed(0)}%) — possible pump artificiel`);
+        } else if (growthPercent > 0) {
+          momentum = Math.round(momentumMax * 0.4);
+          reasons.push(`SOL investi en légère hausse (+${growthPercent.toFixed(0)}%)`);
+        } else {
+          reasons.push(`SOL investi stagnant ou en baisse (${growthPercent.toFixed(0)}%) — plus de ventes que d'achats`);
+        }
+      } else {
+        reasons.push("Pas assez de SOL investi au départ pour calculer une tendance");
+      }
+    } else {
+      reasons.push("Pas assez d'historique pour juger la pression d'achat réelle");
+    }
   }
 
   // --- Qualité du volume/liquidité (seulement si on a des données de trades, post-migration) ---
