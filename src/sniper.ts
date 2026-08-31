@@ -32,6 +32,7 @@ interface MarketCapReading {
   marketCapUsd: number;
   hasTradeCounts: boolean;
   realSolReserves: number;
+  bondingCurveProgressPercent: number;
 }
 
 export class AutoTrader {
@@ -134,14 +135,19 @@ export class AutoTrader {
     if (bondingCurveKey) {
       const onChain = await fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd);
       if (onChain && !onChain.complete) {
-        return { marketCapUsd: onChain.marketCapUsd, hasTradeCounts: false, realSolReserves: onChain.realSolReserves };
+        return {
+          marketCapUsd: onChain.marketCapUsd,
+          hasTradeCounts: false,
+          realSolReserves: onChain.realSolReserves,
+          bondingCurveProgressPercent: onChain.bondingCurveProgressPercent,
+        };
       }
       // Si complete=true (gradué) ou lecture on-chain indisponible, on tente DexScreener en repli
     }
 
     const dex = await fetchDexScreenerData(mint);
     if (dex && dex.marketCapUsd > 0) {
-      return { marketCapUsd: dex.marketCapUsd, hasTradeCounts: true, realSolReserves: 0 };
+      return { marketCapUsd: dex.marketCapUsd, hasTradeCounts: true, realSolReserves: 0, bondingCurveProgressPercent: 100 };
     }
 
     return null;
@@ -166,6 +172,7 @@ export class AutoTrader {
     watch.mcHistory.push({ t: Date.now(), marketCapUsd: reading.marketCapUsd });
     if (watch.mcHistory.length > 30) watch.mcHistory.shift();
     watch.lastRealSolReserves = reading.realSolReserves;
+    watch.lastBondingCurveProgressPercent = reading.bondingCurveProgressPercent;
 
     if (!reading.hasTradeCounts && reading.realSolReserves > 0) {
       watch.realSolHistory.push({ t: Date.now(), realSol: reading.realSolReserves });

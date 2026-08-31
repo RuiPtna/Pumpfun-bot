@@ -14,6 +14,7 @@ export interface TokenWatch {
   lastBuys5m: number;
   lastSells5m: number;
   lastRealSolReserves: number;
+  lastBondingCurveProgressPercent: number;
   decided: boolean;
 }
 
@@ -40,6 +41,7 @@ export function createTokenWatch(
     lastBuys5m: 0,
     lastSells5m: 0,
     lastRealSolReserves: 0,
+    lastBondingCurveProgressPercent: 0,
     decided: false,
   };
 }
@@ -199,6 +201,17 @@ export function passesHardFilters(
   // pendant la phase bonding curve — après migration, la liquidité DexScreener sert de proxy).
   if (watch.bondingCurveKey && watch.lastRealSolReserves < params.minRealSolInvested) {
     return { ok: false, reason: "pas assez de SOL réellement investi (token probablement mort/sans acheteurs)" };
+  }
+
+  // Un token encore trop tôt sur sa bonding curve n'a pas encore prouvé sa résilience face
+  // à la fenêtre la plus risquée (les tout premiers instants, là où la majorité des rugs
+  // se produisent). Attendre une progression minimum améliore le taux de survie au prix
+  // d'un peu moins de potentiel de hausse.
+  if (watch.bondingCurveKey && watch.lastBondingCurveProgressPercent < params.minBondingCurveProgressPercent) {
+    return {
+      ok: false,
+      reason: `progression de la bonding curve trop faible (${watch.lastBondingCurveProgressPercent.toFixed(0)}%, min ${params.minBondingCurveProgressPercent}%)`,
+    };
   }
 
   return { ok: true };

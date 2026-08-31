@@ -22,6 +22,8 @@ export interface StrategyParams {
   maxCreatorHoldingPercent: number;
   /** SOL minimum que le créateur doit avoir investi lui-même à la création (un achat initial trop faible corrèle avec les rugs instantanés) */
   minCreatorInitialBuySol: number;
+  /** % minimum de progression de la bonding curve avant d'acheter — un token déjà avancé a survécu à la fenêtre la plus risquée */
+  minBondingCurveProgressPercent: number;
   /** Rejette les tokens dont l'autorité de mint ou de freeze n'est pas révoquée (protection anti-honeypot) */
   requireRevokedAuthorities: boolean;
   /** % max détenu par le plus gros holder avant d'acheter (rejette si dépassé) */
@@ -77,6 +79,7 @@ export const defaultParams: StrategyParams = {
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 15,
   minCreatorInitialBuySol: 0.5,
+  minBondingCurveProgressPercent: 15,
   requireRevokedAuthorities: true,
   maxTopHolderPercent: 35,
   maxTop10HolderPercent: 70,
@@ -121,6 +124,7 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "minRealSolInvested",
   "maxCreatorHoldingPercent",
   "minCreatorInitialBuySol",
+  "minBondingCurveProgressPercent",
   "maxTopHolderPercent",
   "maxTop10HolderPercent",
   "minEntryScore",

@@ -51,7 +51,18 @@ export interface BondingCurveSnapshot {
   complete: boolean;
   /** SOL réellement déposé par de vrais acheteurs (hors réserves virtuelles de départ) */
   realSolReserves: number;
+  /**
+   * % de progression officiel de la bonding curve (0-100), calculé avec les constantes
+   * connues du protocole pump.fun : la curve démarre avec 793 100 000 tokens "réels" en
+   * réserve et atteint la graduation quand il n'en reste plus que 206 900 000 (= 100%).
+   * Un token déjà bien avancé sur sa curve a survécu à la fenêtre la plus risquée (les
+   * tout premiers instants) — c'est un signal de résilience à part entière.
+   */
+  bondingCurveProgressPercent: number;
 }
+
+const CURVE_START_REAL_TOKENS = 793_100_000;
+const CURVE_GRADUATION_REAL_TOKENS = 206_900_000;
 
 export async function fetchBondingCurveMarketCap(
   connection: Connection,
@@ -75,10 +86,16 @@ export async function fetchBondingCurveMarketCap(
     // vaut mieux être ignorée que de déclencher un trade sur une donnée fausse.
     if (!Number.isFinite(marketCapSol) || marketCapSol <= 0 || marketCapSol > 100_000_000) return null;
 
+    const realTokenReservesTokens = Number(state.realTokenReserves) / 10 ** TOKEN_DECIMALS;
+    const rawProgress =
+      100 - ((realTokenReservesTokens - CURVE_GRADUATION_REAL_TOKENS) * 100) / CURVE_START_REAL_TOKENS;
+    const bondingCurveProgressPercent = Math.max(0, Math.min(100, rawProgress));
+
     return {
       marketCapUsd: marketCapSol * solPriceUsd,
       complete: state.complete,
       realSolReserves: Number(state.realSolReserves) / 10 ** SOL_DECIMALS,
+      bondingCurveProgressPercent,
     };
   } catch {
     return null;
