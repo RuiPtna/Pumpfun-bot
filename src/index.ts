@@ -290,7 +290,7 @@ function formatConfig(telegramId: number): string {
     "",
     "<b>📉 Sorties</b>",
     `Stop-loss : ${p.stopLossPercent}%`,
-    `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}%`,
+    `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}% | TP5 +${p.tp5Percent}% → vend ${p.tp5SellPercent}%`,
     `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,
     `Durée max sans TP touché : ${p.maxHoldMinutes} min`,
     "",
@@ -584,18 +584,16 @@ function formatDashboard(telegramId: number): string {
   const winRate = closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0;
   const avgProfit = wins.length > 0 ? wins.reduce((s, t) => s + t.pnlUsd, 0) / wins.length : 0;
   const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnlUsd, 0) / losses.length : 0;
-  const totalPnl = closedTrades.reduce((s, t) => s + t.pnlUsd, 0);
 
-  let peak = params.startingCapitalUsd;
-  let runningCapital = params.startingCapitalUsd;
+  // Max drawdown calculé sur la vraie courbe de capital enregistrée à chaque trade clôturé —
+  // fiable même avec plusieurs positions ouvertes en même temps, contrairement à un rejeu
+  // séquentiel approximatif des trades qui peut diverger de la réalité.
+  const history = state.capitalHistory && state.capitalHistory.length > 0 ? state.capitalHistory : [{ t: "", capital: params.startingCapitalUsd }];
+  let peak = history[0].capital;
   let maxDrawdownPercent = 0;
-  for (const t of closedTrades) {
-    runningCapital += t.pnlUsd;
-    peak = Math.max(peak, runningCapital);
-    // Bornée à 100% : au-delà, ça reflète un désaccord entre ce calcul simplifié (qui rejoue les
-    // trades séquentiellement sur un capital de départ fixe) et le vrai capital simulé qui, lui,
-    // ne peut pas descendre sous 0 — pas une vraie perte de plus de 100%.
-    const drawdown = Math.min(100, ((peak - runningCapital) / peak) * 100);
+  for (const point of history) {
+    peak = Math.max(peak, point.capital);
+    const drawdown = peak > 0 ? ((peak - point.capital) / peak) * 100 : 0;
     maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdown);
   }
 
@@ -610,6 +608,9 @@ function formatDashboard(telegramId: number): string {
     return sum + costBasisRemaining * (1 + gainPercent / 100);
   }, 0);
   const totalPortfolioValue = state.paperCapitalUsd + openPositionsValueUsd;
+  // PnL total dérivé directement de la vraie valeur du portefeuille plutôt que d'une somme
+  // rejouée des trades — fiable même en cas d'historique ancien ou de trades concurrents.
+  const totalPnl = totalPortfolioValue - params.startingCapitalUsd;
 
   return [
     `📊 <b>DASHBOARD</b> — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,

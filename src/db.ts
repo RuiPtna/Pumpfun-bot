@@ -75,6 +75,8 @@ export interface BotState {
   dailyDate: string; // YYYY-MM-DD, pour détecter le changement de jour
   tokensScanned: number;
   tokensRejected: number;
+  /** Instantanés du capital réel (paper) au fil du temps, pour calculer un vrai drawdown */
+  capitalHistory: { t: string; capital: number }[];
 }
 
 interface DbSchema {
@@ -227,12 +229,16 @@ const defaultBotState = (telegramId: number, startingCapitalUsd: number): BotSta
   dailyDate: new Date().toISOString().slice(0, 10),
   tokensScanned: 0,
   tokensRejected: 0,
+  capitalHistory: [{ t: new Date().toISOString(), capital: startingCapitalUsd }],
 });
 
 export function getBotState(telegramId: number, startingCapitalUsd = 20): BotState {
   const data = readDb();
   const existing = data.botStates.find((s) => s.telegramId === telegramId);
-  if (existing) return existing;
+  if (existing) {
+    if (!existing.capitalHistory) existing.capitalHistory = [{ t: new Date().toISOString(), capital: existing.paperCapitalUsd }];
+    return existing;
+  }
   const fresh = defaultBotState(telegramId, startingCapitalUsd);
   data.botStates.push(fresh);
   writeDb(data);

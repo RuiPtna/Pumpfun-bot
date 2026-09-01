@@ -471,6 +471,7 @@ export class AutoTrader {
       { key: "TP2", gain: this.params.tp2Percent, sell: this.params.tp2SellPercent },
       { key: "TP3", gain: this.params.tp3Percent, sell: this.params.tp3SellPercent },
       { key: "TP4", gain: this.params.tp4Percent, sell: this.params.tp4SellPercent },
+      { key: "TP5", gain: this.params.tp5Percent, sell: this.params.tp5SellPercent },
     ];
 
     for (const level of levels) {
@@ -571,6 +572,15 @@ export class AutoTrader {
       if (position.remainingPercent <= 0) {
         closePosition(this.telegramId, position.mint);
         this.peakMarketCaps.delete(position.mint);
+
+        // Instantané du capital une fois la position entièrement liquidée (réalisé, pas d'estimation
+        // sur une position encore ouverte) — sert à calculer un vrai drawdown, pas un rejeu approximatif.
+        if (!this.params.liveTrading) {
+          const stateForSnapshot = getBotState(this.telegramId, this.params.startingCapitalUsd);
+          stateForSnapshot.capitalHistory.push({ t: new Date().toISOString(), capital: stateForSnapshot.paperCapitalUsd });
+          if (stateForSnapshot.capitalHistory.length > 500) stateForSnapshot.capitalHistory.shift();
+          saveBotState(this.telegramId, stateForSnapshot);
+        }
       } else {
         saveOpenPosition(position);
       }
@@ -635,6 +645,13 @@ export async function manualSellPosition(
     closedAt: new Date().toISOString(),
   });
   closePosition(telegramId, mint);
+
+  if (!params.liveTrading) {
+    const stateForSnapshot = getBotState(telegramId, params.startingCapitalUsd);
+    stateForSnapshot.capitalHistory.push({ t: new Date().toISOString(), capital: stateForSnapshot.paperCapitalUsd });
+    if (stateForSnapshot.capitalHistory.length > 500) stateForSnapshot.capitalHistory.shift();
+    saveBotState(telegramId, stateForSnapshot);
+  }
 
   return signature;
 }
