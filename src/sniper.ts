@@ -119,6 +119,13 @@ export class AutoTrader {
     creatorAddress: string | null,
     creatorInitialBuySol: number
   ): void {
+    // Garde-fou n°1 : si ce token est déjà observé ou déjà détenu, on ignore ce nouvel
+    // événement de création plutôt que de créer un doublon (ex. si PumpPortal renvoie
+    // deux fois le même événement, ou après une reconnexion du WebSocket).
+    if (this.watches.has(mint) || getOpenPositions(this.telegramId).some((p) => p.mint === mint)) {
+      return;
+    }
+
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     state.tokensScanned += 1;
     saveBotState(this.telegramId, state);
@@ -296,6 +303,18 @@ export class AutoTrader {
     score: number,
     hasTradeCounts: boolean
   ): Promise<void> {
+    // Garde-fou n°2 (défense en profondeur) : ne jamais acheter un token pour lequel une
+    // position est déjà ouverte — l'écraser effacerait sa progression réelle (paliers déjà
+    // atteints, % restant), causant des TP qui semblent se "re-déclencher" à répétition.
+    if (getOpenPositions(this.telegramId).some((p) => p.mint === mint)) {
+      const watchObj = this.watches.get(mint);
+      if (watchObj) watchObj.decided = true;
+      const interval = this.evalIntervals.get(mint);
+      if (interval) clearInterval(interval);
+      this.evalIntervals.delete(mint);
+      return;
+    }
+
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     const solPriceUsd = await getSolPriceUsd();
 
