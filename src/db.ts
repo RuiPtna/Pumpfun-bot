@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { StrategyParams } from "./config";
 
 /**
  * Stockage minimal en JSON sur disque.
@@ -79,6 +80,11 @@ export interface BotState {
   capitalHistory: { t: string; capital: number }[];
 }
 
+export interface UserParamsRecord {
+  telegramId: number;
+  params: StrategyParams;
+}
+
 interface DbSchema {
   wallets: UserWallet[];
   trades: Trade[];
@@ -86,6 +92,7 @@ interface DbSchema {
   rejectedTokens: RejectedToken[];
   closedTrades: ClosedTrade[];
   botStates: BotState[];
+  userParams: UserParamsRecord[];
 }
 
 const DB_PATH = path.join(__dirname, "..", "data", "db.json");
@@ -101,6 +108,7 @@ function ensureDb(): void {
       rejectedTokens: [],
       closedTrades: [],
       botStates: [],
+      userParams: [],
     };
     fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
   }
@@ -114,6 +122,7 @@ function readDb(): DbSchema {
   if (!data.rejectedTokens) data.rejectedTokens = [];
   if (!data.closedTrades) data.closedTrades = [];
   if (!data.botStates) data.botStates = [];
+  if (!data.userParams) data.userParams = [];
   return data;
 }
 
@@ -250,5 +259,24 @@ export function saveBotState(telegramId: number, state: BotState): void {
   const idx = data.botStates.findIndex((s) => s.telegramId === telegramId);
   if (idx >= 0) data.botStates[idx] = state;
   else data.botStates.push(state);
+  writeDb(data);
+}
+
+/**
+ * Récupère la config de stratégie sauvegardée pour cet utilisateur, si elle existe.
+ * Retourne null si l'utilisateur n'a encore rien de sauvegardé (première utilisation) —
+ * dans ce cas, appelant doit utiliser defaultParams comme base.
+ */
+export function getUserParams(telegramId: number): StrategyParams | null {
+  const record = readDb().userParams.find((r) => r.telegramId === telegramId);
+  return record ? record.params : null;
+}
+
+/** Sauvegarde la config de stratégie complète — appelé à chaque modification via /set, /live, etc. */
+export function saveUserParams(telegramId: number, params: StrategyParams): void {
+  const data = readDb();
+  const idx = data.userParams.findIndex((r) => r.telegramId === telegramId);
+  if (idx >= 0) data.userParams[idx] = { telegramId, params };
+  else data.userParams.push({ telegramId, params });
   writeDb(data);
 }

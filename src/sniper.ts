@@ -179,7 +179,7 @@ export class AutoTrader {
       if (watch.realSolHistory.length > 30) watch.realSolHistory.shift();
     }
 
-    const hardFilter = passesHardFilters(watch, reading.marketCapUsd, this.params);
+    const hardFilter = passesHardFilters(watch, reading.marketCapUsd, this.params, reading.hasTradeCounts);
     if (!hardFilter.ok) {
       if (hardFilter.reason === "trop jeune") return;
       this.rejectWatch(mint, hardFilter.reason!, 0);

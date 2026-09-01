@@ -187,6 +187,7 @@ export function passesHardFilters(
   watch: TokenWatch,
   currentMarketCapUsd: number,
   params: StrategyParams,
+  hasTradeCounts: boolean,
   now: number = Date.now()
 ): { ok: boolean; reason?: string } {
   const ageMinutes = (now - watch.createdAt) / 60000;
@@ -196,22 +197,22 @@ export function passesHardFilters(
   if (currentMarketCapUsd < params.minMarketCapUsd) return { ok: false, reason: "market cap trop faible" };
   if (currentMarketCapUsd > params.maxMarketCapUsd) return { ok: false, reason: "market cap trop élevé" };
 
-  // Filtre anti-token-mort : le market cap "virtuel" existe même sans aucun acheteur réel.
-  // On exige un minimum de SOL réellement investi par de vrais traders (uniquement vérifiable
-  // pendant la phase bonding curve — après migration, la liquidité DexScreener sert de proxy).
-  if (watch.bondingCurveKey && watch.lastRealSolReserves < params.minRealSolInvested) {
-    return { ok: false, reason: "pas assez de SOL réellement investi (token probablement mort/sans acheteurs)" };
-  }
+  // Filtre anti-token-mort et filtre de progression : uniquement pertinents PENDANT la phase
+  // bonding curve. Une fois le token gradué (hasTradeCounts=true, données DexScreener), ces
+  // deux valeurs retombent à leur défaut neutre (0 SOL / 100% de "progression") et ne doivent
+  // plus être vérifiées — sinon un token gradué serait toujours rejeté à tort, quel que soit
+  // son potentiel réel (la liquidité DexScreener sert alors de garde-fou à la place).
+  if (!hasTradeCounts) {
+    if (watch.lastRealSolReserves < params.minRealSolInvested) {
+      return { ok: false, reason: "pas assez de SOL réellement investi (token probablement mort/sans acheteurs)" };
+    }
 
-  // Un token encore trop tôt sur sa bonding curve n'a pas encore prouvé sa résilience face
-  // à la fenêtre la plus risquée (les tout premiers instants, là où la majorité des rugs
-  // se produisent). Attendre une progression minimum améliore le taux de survie au prix
-  // d'un peu moins de potentiel de hausse.
-  if (watch.bondingCurveKey && watch.lastBondingCurveProgressPercent < params.minBondingCurveProgressPercent) {
-    return {
-      ok: false,
-      reason: `progression de la bonding curve trop faible (${watch.lastBondingCurveProgressPercent.toFixed(0)}%, min ${params.minBondingCurveProgressPercent}%)`,
-    };
+    if (watch.lastBondingCurveProgressPercent < params.minBondingCurveProgressPercent) {
+      return {
+        ok: false,
+        reason: `progression de la bonding curve trop faible (${watch.lastBondingCurveProgressPercent.toFixed(0)}%, min ${params.minBondingCurveProgressPercent}%)`,
+      };
+    }
   }
 
   return { ok: true };

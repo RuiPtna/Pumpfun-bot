@@ -15,6 +15,8 @@ import {
   saveBotState,
   closeAllOpenPositions,
   clearPaperClosedTrades,
+  getUserParams,
+  saveUserParams,
 } from "./db";
 import { AutoTrader, manualSellPosition } from "./sniper";
 import { escapeHtml } from "./htmlEscape";
@@ -42,9 +44,20 @@ const pendingWithdrawals = new Map<number, { step: "address" | "amount"; address
 
 function getParams(telegramId: number): StrategyParams {
   if (!paramsByUser.has(telegramId)) {
-    paramsByUser.set(telegramId, { ...defaultParams });
+    // On recharge depuis la base si l'utilisateur avait déjà des réglages sauvegardés —
+    // ils survivent ainsi aux redéploiements, contrairement à avant où tout repartait
+    // des valeurs par défaut à chaque redémarrage du bot.
+    const saved = getUserParams(telegramId);
+    // On fusionne avec les défauts : si de nouveaux paramètres ont été ajoutés au code
+    // depuis la dernière sauvegarde, ils prennent quand même une valeur correcte.
+    paramsByUser.set(telegramId, saved ? { ...defaultParams, ...saved } : { ...defaultParams });
   }
   return paramsByUser.get(telegramId)!;
+}
+
+/** À appeler après toute modification de la config d'un utilisateur, pour la rendre persistante. */
+function persistParams(telegramId: number): void {
+  saveUserParams(telegramId, getParams(telegramId));
 }
 
 function isAllowed(telegramId: number): boolean {
@@ -325,6 +338,7 @@ bot.command("set", (ctx) => {
     return;
   }
   (p as any)[key] = value;
+  persistParams(ctx.from.id);
   ctx.reply(`✅ ${key} = ${value}`);
 });
 
@@ -335,12 +349,14 @@ bot.command("live", (ctx) => {
   if (mode === "on") {
     p.liveTrading = true;
     p.paperMode = false;
+    persistParams(ctx.from.id);
     ctx.reply(
       "🔴 MODE LIVE ACTIVÉ — le bot va maintenant utiliser de vrais fonds sur ton wallet. Assure-toi d'avoir testé la stratégie en paper trading et d'être à l'aise avec les paramètres actuels (/config)."
     );
   } else if (mode === "off") {
     p.liveTrading = false;
     p.paperMode = true;
+    persistParams(ctx.from.id);
     ctx.reply("📝 Retour en mode PAPER (simulation, aucun fonds réel utilisé).");
   } else {
     ctx.reply(`Usage : /live on  ou  /live off\nMode actuel : ${p.liveTrading ? "LIVE" : "PAPER"}`);
@@ -548,9 +564,11 @@ bot.command("pausefeature", (ctx) => {
 
   if (mode === "on") {
     params.pauseFeatureEnabled = true;
+    persistParams(ctx.from.id);
     ctx.reply("🟢 Pause automatique après pertes consécutives : activée.");
   } else if (mode === "off") {
     params.pauseFeatureEnabled = false;
+    persistParams(ctx.from.id);
     ctx.reply("🔴 Pause automatique après pertes consécutives : désactivée. Le bot continuera de trader même après plusieurs pertes d'affilée.");
   } else {
     ctx.reply(`Usage : /pausefeature on  ou  /pausefeature off\nÉtat actuel : ${params.pauseFeatureEnabled ? "activée" : "désactivée"}`);
