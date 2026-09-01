@@ -43,6 +43,14 @@ export class AutoTrader {
   private positionPollInterval: NodeJS.Timeout | null = null;
   private notify: (msg: string) => void;
 
+  // Verrous anti-chevauchement : un setInterval ne garantit PAS que le cycle précédent soit
+  // terminé avant d'en lancer un nouveau. Si un cycle prend plus de temps que l'intervalle
+  // (appel réseau lent), plusieurs exécutions concurrentes peuvent se chevaucher sur la même
+  // position/le même token et déclencher des ventes en double, avec des calculs de capital
+  // qui se corrompent en cascade. Ces verrous empêchent ce chevauchement.
+  private evaluatingMints = new Set<string>();
+  private isPollingPositions = false;
+
   constructor(
     private telegramId: number,
     private connection: Connection,
@@ -156,7 +164,17 @@ export class AutoTrader {
   private async evaluateWatch(mint: string): Promise<void> {
     const watch = this.watches.get(mint);
     if (!watch || watch.decided) return;
+    if (this.evaluatingMints.has(mint)) return; // un cycle précédent est encore en cours pour ce token
+    this.evaluatingMints.add(mint);
 
+    try {
+      await this.evaluateWatchInner(mint, watch);
+    } finally {
+      this.evaluatingMints.delete(mint);
+    }
+  }
+
+  private async evaluateWatchInner(mint: string, watch: TokenWatch): Promise<void> {
     const reading = await this.readMarketCap(mint, watch.bondingCurveKey);
     if (!reading) return; // pas encore de donnée exploitable, on réessaiera au prochain cycle
 
@@ -428,11 +446,17 @@ export class AutoTrader {
   }
 
   private async pollAllPositions(): Promise<void> {
-    const positions = getOpenPositions(this.telegramId);
-    for (const position of positions) {
-      const reading = await this.readMarketCap(position.mint, position.bondingCurveKey);
-      if (!reading) continue;
-      await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
+    if (this.isPollingPositions) return; // le cycle précédent tourne encore, on saute celui-ci
+    this.isPollingPositions = true;
+    try {
+      const positions = getOpenPositions(this.telegramId);
+      for (const position of positions) {
+        const reading = await this.readMarketCap(position.mint, position.bondingCurveKey);
+        if (!reading) continue;
+        await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
+      }
+    } finally {
+      this.isPollingPositions = false;
     }
   }
 
