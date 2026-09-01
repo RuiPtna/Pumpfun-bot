@@ -186,6 +186,49 @@ export class AutoTrader {
       return;
     }
 
+    // Filtres de qualité/anti-rug — appliqués tôt, à TOUT candidat qui a passé les filtres
+    // de base, plutôt que seulement à ceux qui atteignent déjà un bon score. Vérifiés une
+    // seule fois par token (watch.qualityChecked) car ce sont des faits qui ne changent pas
+    // au fil des cycles d'évaluation (sauf la concentration du créateur, qui reste vérifiée
+    // ici en une passe — un compromis raisonnable plutôt que de la revérifier toutes les 20s).
+    if (!watch.qualityChecked) {
+      if (watch.creatorAddress && isBlacklistedCreator(this.telegramId, watch.creatorAddress)) {
+        this.rejectWatch(mint, "créateur récidiviste (perte importante déjà subie avec ce créateur)", 0);
+        return;
+      }
+
+      if (watch.creatorInitialBuySol < this.params.minCreatorInitialBuySol) {
+        this.rejectWatch(
+          mint,
+          `achat initial du créateur trop faible (${watch.creatorInitialBuySol.toFixed(2)} SOL, min ${this.params.minCreatorInitialBuySol} SOL)`,
+          0
+        );
+        return;
+      }
+
+      if (this.params.requireRevokedAuthorities) {
+        const authorities = await checkMintAuthorities(this.connection, mint);
+        if (authorities && (!authorities.mintAuthorityRevoked || !authorities.freezeAuthorityRevoked)) {
+          this.rejectWatch(mint, "autorité de mint ou de freeze non révoquée (risque honeypot)", 0);
+          return;
+        }
+      }
+
+      if (watch.creatorAddress) {
+        const creatorHoldingPercent = await fetchCreatorHoldingPercent(this.connection, mint, watch.creatorAddress);
+        if (creatorHoldingPercent !== null && creatorHoldingPercent > this.params.maxCreatorHoldingPercent) {
+          this.rejectWatch(
+            mint,
+            `créateur détient encore ${creatorHoldingPercent.toFixed(0)}% (max ${this.params.maxCreatorHoldingPercent}%)`,
+            0
+          );
+          return;
+        }
+      }
+
+      watch.qualityChecked = true;
+    }
+
     const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
     if (score.total < this.params.minEntryScore) return;
 
@@ -238,47 +281,8 @@ export class AutoTrader {
     const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
     const solPriceUsd = await getSolPriceUsd();
 
-    // Créateur récidiviste : nous a déjà fait perdre gros par le passé — rejet immédiat,
-    // sans même avoir besoin d'appeler le RPC pour les autres vérifications.
-    if (creatorAddress && isBlacklistedCreator(this.telegramId, creatorAddress)) {
-      this.rejectWatch(mint, "créateur récidiviste (perte importante déjà subie avec ce créateur)", score);
-      return;
-    }
-
-    // Achat initial du créateur trop faible : corrèle fortement avec les rugs instantanés
-    // (le créateur ne s'engage pas vraiment sur son propre lancement).
-    if (creatorInitialBuySol < this.params.minCreatorInitialBuySol) {
-      this.rejectWatch(
-        mint,
-        `achat initial du créateur trop faible (${creatorInitialBuySol.toFixed(2)} SOL, min ${this.params.minCreatorInitialBuySol} SOL)`,
-        score
-      );
-      return;
-    }
-
-    // Autorités mint/freeze non révoquées : piège honeypot potentiel (dilution ou gel du wallet).
-    if (this.params.requireRevokedAuthorities) {
-      const authorities = await checkMintAuthorities(this.connection, mint);
-      if (authorities && (!authorities.mintAuthorityRevoked || !authorities.freezeAuthorityRevoked)) {
-        this.rejectWatch(mint, "autorité de mint ou de freeze non révoquée (risque honeypot)", score);
-        return;
-      }
-    }
-
-    // Vérification du % détenu par le créateur — le signal de rug le plus fiable, applicable
-    // à tout moment (avant ou après migration), contrairement à la concentration globale des
-    // holders qui n'a de sens qu'une fois le token sorti de la bonding curve.
-    if (creatorAddress) {
-      const creatorHoldingPercent = await fetchCreatorHoldingPercent(this.connection, mint, creatorAddress);
-      if (creatorHoldingPercent !== null && creatorHoldingPercent > this.params.maxCreatorHoldingPercent) {
-        this.rejectWatch(
-          mint,
-          `créateur détient encore ${creatorHoldingPercent.toFixed(0)}% (max ${this.params.maxCreatorHoldingPercent}%)`,
-          score
-        );
-        return;
-      }
-    }
+    // Les vérifications créateur/autorités/concentration ont déjà été faites plus tôt
+    // (dans evaluateWatch, avant même le calcul du score) — pas besoin de les refaire ici.
 
     const today = new Date().toISOString().slice(0, 10);
     if (state.dailyDate !== today) {

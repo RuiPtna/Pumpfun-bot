@@ -15,6 +15,7 @@ export interface TokenWatch {
   lastSells5m: number;
   lastRealSolReserves: number;
   lastBondingCurveProgressPercent: number;
+  qualityChecked: boolean;
   decided: boolean;
 }
 
@@ -42,6 +43,7 @@ export function createTokenWatch(
     lastSells5m: 0,
     lastRealSolReserves: 0,
     lastBondingCurveProgressPercent: 0,
+    qualityChecked: false,
     decided: false,
   };
 }
