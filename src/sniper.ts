@@ -451,7 +451,7 @@ export class AutoTrader {
         : `$${positionSizeUsd.toFixed(2)} (simulé)`;
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
-        `✅ ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)})\n` +
+        `✅ ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
           `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${marketCapUsd.toFixed(0)}</b> de market cap${txLine}`
       );
     } catch (err) {
@@ -635,7 +635,7 @@ export class AutoTrader {
       const pnlSign = pnlUsdForSlice >= 0 ? "+" : "";
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : " (paper)";
       this.notify(
-        `${reason} sur <b>${escapeHtml(position.symbol)}</b> (${escapeHtml(position.name)})\n` +
+        `${reason} sur <b>${escapeHtml(position.symbol)}</b> (${escapeHtml(position.name)}) <code>${position.mint.slice(0, 6)}...</code>\n` +
           `Vendu ${sellPercent}% — <b>${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}%</b> (${pnlSign}$${pnlUsdForSlice.toFixed(2)})${txLine}${fallbackNote}`
       );
     } catch (err) {
