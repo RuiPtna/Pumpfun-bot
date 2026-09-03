@@ -78,6 +78,12 @@ export interface BotState {
   tokensRejected: number;
   /** Instantanés du capital réel (paper) au fil du temps, pour calculer un vrai drawdown */
   capitalHistory: { t: string; capital: number }[];
+  /**
+   * Valeur en $ du wallet réel au moment où le mode live a été activé pour la première fois —
+   * sert de référence pour calculer le PnL en live (dépôt variable selon le cours du SOL au
+   * moment du dépôt, donc jamais une valeur fixe comme en paper).
+   */
+  liveStartingCapitalUsd: number | null;
 }
 
 export interface UserParamsRecord {
@@ -239,6 +245,7 @@ const defaultBotState = (telegramId: number, startingCapitalUsd: number): BotSta
   tokensScanned: 0,
   tokensRejected: 0,
   capitalHistory: [{ t: new Date().toISOString(), capital: startingCapitalUsd }],
+  liveStartingCapitalUsd: null,
 });
 
 export function getBotState(telegramId: number, startingCapitalUsd = 20): BotState {
@@ -246,6 +253,7 @@ export function getBotState(telegramId: number, startingCapitalUsd = 20): BotSta
   const existing = data.botStates.find((s) => s.telegramId === telegramId);
   if (existing) {
     if (!existing.capitalHistory) existing.capitalHistory = [{ t: new Date().toISOString(), capital: existing.paperCapitalUsd }];
+    if (existing.liveStartingCapitalUsd === undefined) existing.liveStartingCapitalUsd = null;
     return existing;
   }
   const fresh = defaultBotState(telegramId, startingCapitalUsd);

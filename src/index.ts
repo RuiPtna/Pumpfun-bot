@@ -19,6 +19,7 @@ import {
   saveUserParams,
 } from "./db";
 import { AutoTrader, manualSellPosition, refreshOpenPositionsPrices } from "./sniper";
+import { getSolPriceUsd } from "./priceFeed";
 import { escapeHtml } from "./htmlEscape";
 import { defaultParams, numericParamKeys, booleanParamKeys, StrategyParams } from "./config";
 
@@ -150,7 +151,10 @@ async function formatBalance(telegramId: number): Promise<string> {
   const wallet = getOrCreateWallet(telegramId);
   try {
     const lamports = await connection.getBalance(new PublicKey(wallet.publicKey));
-    return `💰 Solde réel : ${(lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`;
+    const solBalance = lamports / LAMPORTS_PER_SOL;
+    const solPriceUsd = await getSolPriceUsd().catch(() => null);
+    const usdLine = solPriceUsd ? ` (≈ $${(solBalance * solPriceUsd).toFixed(2)})` : "";
+    return `💰 Solde réel : ${solBalance.toFixed(4)} SOL${usdLine}`;
   } catch (err) {
     return `Erreur : ${(err as Error).message}`;
   }
@@ -365,7 +369,7 @@ bot.command("set", (ctx) => {
   );
 });
 
-bot.command("live", (ctx) => {
+bot.command("live", async (ctx) => {
   const [, mode] = ctx.message.text.split(" ").filter(Boolean);
   const p = getParams(ctx.from.id);
 
@@ -373,6 +377,24 @@ bot.command("live", (ctx) => {
     p.liveTrading = true;
     p.paperMode = false;
     persistParams(ctx.from.id);
+
+    // Instantané du vrai solde au moment de l'activation — sert de référence pour calculer
+    // le PnL en live (le montant déposé varie selon le cours du SOL, jamais une valeur fixe).
+    try {
+      const wallet = getOrCreateWallet(ctx.from.id);
+      const [lamports, solPriceUsd] = await Promise.all([
+        connection.getBalance(new PublicKey(wallet.publicKey)),
+        getSolPriceUsd(),
+      ]);
+      const realBalanceUsd = (lamports / LAMPORTS_PER_SOL) * solPriceUsd;
+      const state = getBotState(ctx.from.id, p.startingCapitalUsd);
+      state.liveStartingCapitalUsd = realBalanceUsd;
+      saveBotState(ctx.from.id, state);
+    } catch {
+      // Si la lecture échoue, le dashboard retombera sur le solde actuel comme référence —
+      // pas idéal mais pas bloquant.
+    }
+
     ctx.reply(
       "🔴 MODE LIVE ACTIVÉ — le bot va maintenant utiliser de vrais fonds sur ton wallet. Assure-toi d'avoir testé la stratégie en paper trading et d'être à l'aise avec les paramètres actuels (/config)."
     );
@@ -619,7 +641,7 @@ bot.command("resume", (ctx) => {
   ctx.reply("▶️ Pause levée immédiatement, compteur de pertes consécutives remis à zéro.");
 });
 
-function formatDashboard(telegramId: number): string {
+async function formatDashboard(telegramId: number): Promise<string> {
   const params = getParams(telegramId);
   const state = getBotState(telegramId, params.startingCapitalUsd);
   const closedTrades = getClosedTrades(telegramId);
@@ -653,16 +675,34 @@ function formatDashboard(telegramId: number): string {
     const costBasisRemaining = p.positionSizeUsd * (p.remainingPercent / 100);
     return sum + costBasisRemaining * (1 + gainPercent / 100);
   }, 0);
-  const totalPortfolioValue = state.paperCapitalUsd + openPositionsValueUsd;
-  // PnL total dérivé directement de la vraie valeur du portefeuille plutôt que d'une somme
-  // rejouée des trades — fiable même en cas d'historique ancien ou de trades concurrents.
-  const totalPnl = totalPortfolioValue - params.startingCapitalUsd;
+
+  // En mode LIVE, le "cash disponible" doit refléter le VRAI solde du wallet (dépôt variable
+  // selon le cours du SOL), jamais le capital simulé de $20 par défaut du paper trading.
+  let cashUsd = state.paperCapitalUsd;
+  let startingReferenceUsd = params.startingCapitalUsd;
+  if (params.liveTrading) {
+    try {
+      const wallet = getOrCreateWallet(telegramId);
+      const [lamports, solPriceUsd] = await Promise.all([
+        connection.getBalance(new PublicKey(wallet.publicKey)),
+        getSolPriceUsd(),
+      ]);
+      cashUsd = (lamports / LAMPORTS_PER_SOL) * solPriceUsd;
+      startingReferenceUsd = state.liveStartingCapitalUsd ?? cashUsd;
+    } catch {
+      // Lecture RPC indisponible — on retombe sur les dernières valeurs connues plutôt que
+      // de planter l'affichage du dashboard.
+    }
+  }
+
+  const totalPortfolioValue = cashUsd + openPositionsValueUsd;
+  const totalPnl = totalPortfolioValue - startingReferenceUsd;
 
   return [
     `📊 <b>DASHBOARD</b> — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
     "",
     `Valeur totale du portefeuille : <b>$${totalPortfolioValue.toFixed(2)}</b>`,
-    `— dont cash disponible : $${state.paperCapitalUsd.toFixed(2)}`,
+    `— dont cash disponible : $${cashUsd.toFixed(2)}`,
     `— dont positions ouvertes : $${openPositionsValueUsd.toFixed(2)}`,
     `PnL total : <b>${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}</b>`,
     `Positions ouvertes : ${openPositions.length}/${params.maxOpenPositions}`,
@@ -757,8 +797,8 @@ bot.action("cancel_reset_paper", async (ctx) => {
   await editOrReply(ctx, "Réinitialisation annulée.", mainMenuKeyboard());
 });
 
-bot.command("dashboard", (ctx) => {
-  ctx.reply(formatDashboard(ctx.from.id), { parse_mode: "HTML", ...dashboardKeyboard() });
+bot.command("dashboard", async (ctx) => {
+  ctx.reply(await formatDashboard(ctx.from.id), { parse_mode: "HTML", ...dashboardKeyboard() });
 });
 
 // --- Boutons du menu principal ---
@@ -819,7 +859,7 @@ bot.action("wallet_withdraw_start", async (ctx) => {
 });
 bot.action("menu_dashboard", async (ctx) => {
   await ctx.answerCbQuery();
-  const text = formatDashboard(ctx.from!.id);
+  const text = await formatDashboard(ctx.from!.id);
   await editOrReply(ctx, text, dashboardKeyboard());
 });
 
