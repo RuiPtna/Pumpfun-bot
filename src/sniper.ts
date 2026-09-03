@@ -487,6 +487,14 @@ export class AutoTrader {
       );
     } catch (err) {
       this.notify(`❌ Échec de l'entrée sur ${escapeHtml(symbol)} (${escapeHtml(name)})... : ${escapeHtml((err as Error).message)}`);
+      // On abandonne ce token plutôt que de retenter automatiquement au cycle suivant (~20s) —
+      // si l'échec est permanent (ex. bonding curve vraiment complétée des deux côtés), retenter
+      // en boucle ne fait que spammer des tentatives et des messages d'erreur pour rien.
+      const watchObj = this.watches.get(mint);
+      if (watchObj) watchObj.decided = true;
+      const interval = this.evalIntervals.get(mint);
+      if (interval) clearInterval(interval);
+      this.evalIntervals.delete(mint);
     }
   }
 

@@ -15,7 +15,7 @@ async function getQuote(
   slippageBps: number
 ): Promise<JupiterQuote> {
   const url = `${JUPITER_QUOTE_URL}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`Jupiter quote a échoué (${res.status}): ${await res.text()}`);
   return res.json();
 }
@@ -30,7 +30,7 @@ async function getSwapTransaction(quote: JupiterQuote, userPublicKey: string, pr
       wrapAndUnwrapSol: true,
       prioritizationFeeLamports: Math.round(priorityFeeSol * 1_000_000_000),
     }),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new Error(`Jupiter swap a échoué (${res.status}): ${await res.text()}`);
   const data = (await res.json()) as { swapTransaction: string };
