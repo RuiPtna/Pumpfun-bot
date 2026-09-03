@@ -9,6 +9,7 @@ import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
 import { checkMintAuthorities } from "./mintAuthority";
+import { rpcLimiter } from "./rpcLimiter";
 import { escapeHtml } from "./htmlEscape";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
@@ -148,7 +149,7 @@ export class AutoTrader {
     const solPriceUsd = await getSolPriceUsd();
 
     if (bondingCurveKey) {
-      const onChain = await fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd);
+      const onChain = await rpcLimiter.run(() => fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd));
       if (onChain && !onChain.complete) {
         return {
           marketCapUsd: onChain.marketCapUsd,
@@ -232,7 +233,7 @@ export class AutoTrader {
       }
 
       if (this.params.requireRevokedAuthorities) {
-        const authorities = await checkMintAuthorities(this.connection, mint);
+        const authorities = await rpcLimiter.run(() => checkMintAuthorities(this.connection, mint));
         if (authorities && (!authorities.mintAuthorityRevoked || !authorities.freezeAuthorityRevoked)) {
           this.rejectWatch(mint, "autorité de mint ou de freeze non révoquée (risque honeypot)", 0);
           return;
@@ -240,7 +241,9 @@ export class AutoTrader {
       }
 
       if (watch.creatorAddress) {
-        const creatorHoldingPercent = await fetchCreatorHoldingPercent(this.connection, mint, watch.creatorAddress);
+        const creatorHoldingPercent = await rpcLimiter.run(() =>
+          fetchCreatorHoldingPercent(this.connection, mint, watch.creatorAddress!)
+        );
         if (creatorHoldingPercent !== null && creatorHoldingPercent > this.params.maxCreatorHoldingPercent) {
           this.rejectWatch(
             mint,
