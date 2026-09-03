@@ -27,7 +27,7 @@ import {
 
 const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : uniquement subscribeNewToken ici
 const WATCH_POLL_INTERVAL_MS = 20_000;
-const POSITION_POLL_INTERVAL_MS = 5_000; // réduit de 15s pour réagir plus vite sur les positions ouvertes
+const POSITION_POLL_INTERVAL_MS = 2_000; // vérification automatique des positions toutes les 2s (indépendant de tout bouton)
 // Limite technique (indépendante des réglages métier) : au-delà, on arrête d'observer un token
 // qui ne s'est jamais décidé, pour libérer les ressources — voir le commentaire dans beginWatching.
 const WATCH_TECHNICAL_TIMEOUT_MINUTES = 15;

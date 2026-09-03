@@ -41,6 +41,7 @@ const connection = new Connection(RPC_ENDPOINT, "confirmed");
 const paramsByUser = new Map<number, StrategyParams>();
 const autoTraderByUser = new Map<number, AutoTrader>();
 const pendingWithdrawals = new Map<number, { step: "address" | "amount"; address?: string }>();
+const pnlLiveSessions = new Map<number, NodeJS.Timeout>();
 
 function getParams(telegramId: number): StrategyParams {
   if (!paramsByUser.has(telegramId)) {
@@ -463,7 +464,15 @@ function formatPnl(telegramId: number): string {
 function pnlKeyboard(telegramId: number) {
   const positions = getOpenPositions(telegramId);
   const sellButtons = positions.map((p) => [Markup.button.callback(`💸 Vendre ${p.symbol}`, `sell_${p.mint}`)]);
-  return Markup.inlineKeyboard([...sellButtons, [Markup.button.callback("🔄 Actualiser", "menu_pnl")], [backToMenuButton()]]);
+  return Markup.inlineKeyboard([
+    ...sellButtons,
+    [Markup.button.callback("🔄 Actualiser", "menu_pnl"), Markup.button.callback("📡 Live (2 min)", "menu_pnl_live_start")],
+    [backToMenuButton()],
+  ]);
+}
+
+function pnlLiveKeyboard() {
+  return Markup.inlineKeyboard([[Markup.button.callback("⏹️ Arrêter le live", "menu_pnl_live_stop")]]);
 }
 
 bot.command("pnl", async (ctx) => {
@@ -764,6 +773,66 @@ bot.action("menu_pnl", async (ctx) => {
   await refreshOpenPositionsPrices(telegramId, connection).catch(() => {});
   const text = formatPnl(telegramId);
   await editOrReply(ctx, text, pnlKeyboard(telegramId));
+});
+
+bot.action("menu_pnl_live_start", async (ctx) => {
+  await ctx.answerCbQuery("📡 Live démarré (2 min)");
+  const telegramId = ctx.from!.id;
+  const chatId = ctx.chat!.id;
+  const messageId = (ctx.callbackQuery.message as any)?.message_id;
+  if (!messageId) return;
+
+  // Une seule session live à la fois par utilisateur — on coupe l'ancienne si elle existe.
+  const existing = pnlLiveSessions.get(telegramId);
+  if (existing) clearInterval(existing);
+
+  const LIVE_TICK_MS = 2500;
+  const LIVE_DURATION_MS = 2 * 60 * 1000; // 2 min — évite un minuteur oublié qui tourne indéfiniment
+  const startedAt = Date.now();
+
+  const tick = async () => {
+    if (Date.now() - startedAt >= LIVE_DURATION_MS) {
+      const interval = pnlLiveSessions.get(telegramId);
+      if (interval) clearInterval(interval);
+      pnlLiveSessions.delete(telegramId);
+      try {
+        await bot.telegram.editMessageText(
+          chatId,
+          messageId,
+          undefined,
+          formatPnl(telegramId) + "\n\n⏹️ Live terminé (2 min écoulées) — /pnl pour relancer.",
+          { parse_mode: "HTML", ...pnlKeyboard(telegramId) }
+        );
+      } catch {
+        /* message peut-être supprimé/inaccessible, on ignore */
+      }
+      return;
+    }
+
+    await refreshOpenPositionsPrices(telegramId, connection).catch(() => {});
+    const text = formatPnl(telegramId) + "\n\n📡 <i>Mise à jour en direct...</i>";
+    try {
+      await bot.telegram.editMessageText(chatId, messageId, undefined, text, {
+        parse_mode: "HTML",
+        ...pnlLiveKeyboard(),
+      });
+    } catch {
+      // "message is not modified" (prix identique) ou autre — on continue le live sans planter
+    }
+  };
+
+  const interval = setInterval(tick, LIVE_TICK_MS);
+  pnlLiveSessions.set(telegramId, interval);
+  await tick();
+});
+
+bot.action("menu_pnl_live_stop", async (ctx) => {
+  await ctx.answerCbQuery("⏹️ Live arrêté");
+  const telegramId = ctx.from!.id;
+  const interval = pnlLiveSessions.get(telegramId);
+  if (interval) clearInterval(interval);
+  pnlLiveSessions.delete(telegramId);
+  await editOrReply(ctx, formatPnl(telegramId), pnlKeyboard(telegramId));
 });
 
 bot.action(/^sell_(.+)$/, async (ctx) => {
