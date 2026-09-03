@@ -65,8 +65,11 @@ export class AutoTrader {
     this.notify = notifyFn;
   }
 
+  private stoppedByUser = false;
+
   start(): void {
     if (this.ws) return;
+    this.stoppedByUser = false;
     this.ws = new WebSocket(PUMPPORTAL_WS);
 
     this.ws.on("open", () => {
@@ -78,8 +81,11 @@ export class AutoTrader {
     this.ws.on("message", (raw) => this.handleMessage(raw.toString()));
     this.ws.on("error", (err) => this.notify(`⚠️ Erreur WebSocket : ${err.message}`));
     this.ws.on("close", () => {
-      this.notify("🔴 Connexion perdue, reconnexion dans 5s...");
       this.ws = null;
+      // Ne se reconnecte QUE si la coupure est involontaire (réseau, PumpPortal down, etc.) —
+      // pas si l'utilisateur a explicitement demandé l'arrêt via /autotrade off.
+      if (this.stoppedByUser) return;
+      this.notify("🔴 Connexion perdue, reconnexion dans 5s...");
       setTimeout(() => this.start(), 5000);
     });
 
@@ -87,6 +93,7 @@ export class AutoTrader {
   }
 
   stop(): void {
+    this.stoppedByUser = true;
     this.evalIntervals.forEach((t) => clearInterval(t));
     this.evalIntervals.clear();
     if (this.positionPollInterval) clearInterval(this.positionPollInterval);

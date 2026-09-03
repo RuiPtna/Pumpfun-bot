@@ -714,7 +714,6 @@ async function formatDashboard(telegramId: number): Promise<string> {
     state.pausedUntil && params.pauseFeatureEnabled
       ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}`
       : "▶️ Actif",
-    params.liveTrading ? "\n⚠️ En mode LIVE, le cash affiché ici reste le compteur paper — utilise /balance pour ton vrai solde SOL." : "",
   ]
     .filter(Boolean)
     .join("\n");
