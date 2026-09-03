@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { Connection, Keypair } from "@solana/web3.js";
-import { executeTrade } from "./trade";
+import { buyWithFallback } from "./buyWithFallback";
 import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
@@ -416,6 +416,7 @@ export class AutoTrader {
 
     try {
       let signature: string;
+      let buyFallbackNote = "";
       const positionSizeSol = positionSizeUsd / solPriceUsd;
 
       if (this.params.liveTrading) {
@@ -426,14 +427,18 @@ export class AutoTrader {
           return;
         }
 
-        signature = await executeTrade(this.connection, this.signer, {
-          action: "buy",
+        const result = await buyWithFallback(
+          this.connection,
+          this.signer,
           mint,
-          amount: positionSizeSol,
-          denominatedInSol: true,
-          slippagePercent: this.params.maxSlippagePercent,
-          priorityFeeSol: this.params.priorityFeeSol,
-        });
+          positionSizeSol,
+          this.params.maxSlippagePercent,
+          this.params.priorityFeeSol
+        );
+        signature = result.signature;
+        if (result.usedFallback) {
+          buyFallbackNote = "\nℹ️ Acheté via Jupiter (PumpPortal n'a pas pu traiter ce token, probablement gradué)";
+        }
       } else {
         simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd);
         signature = `PAPER-${Date.now()}`;
@@ -478,7 +483,7 @@ export class AutoTrader {
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
         `✅ ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
-          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${marketCapUsd.toFixed(0)}</b> de market cap${txLine}`
+          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${marketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`
       );
     } catch (err) {
       this.notify(`❌ Échec de l'entrée sur ${escapeHtml(symbol)} (${escapeHtml(name)})... : ${escapeHtml((err as Error).message)}`);

@@ -104,3 +104,19 @@ export async function sellViaJupiter(
 
   return jupiterSwap(connection, signer, mint, SOL_MINT, amountRaw, slippagePercent, priorityFeeSol);
 }
+
+/**
+ * Achète un token via Jupiter avec un montant de SOL donné — utilisé en repli quand
+ * PumpPortal refuse l'achat (ex. bonding curve déjà gradué vers Raydium/PumpSwap).
+ */
+export async function buyViaJupiter(
+  connection: Connection,
+  signer: Keypair,
+  mint: string,
+  amountSol: number,
+  slippagePercent: number,
+  priorityFeeSol: number
+): Promise<string> {
+  const amountRawLamports = Math.round(amountSol * 1_000_000_000).toString();
+  return jupiterSwap(connection, signer, SOL_MINT, mint, amountRawLamports, slippagePercent, priorityFeeSol);
+}
