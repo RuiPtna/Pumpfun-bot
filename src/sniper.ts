@@ -444,6 +444,17 @@ export class AutoTrader {
         signature = `PAPER-${Date.now()}`;
       }
 
+      // Le prix utilisé pour la décision (marketCapUsd) a été lu AVANT d'envoyer la transaction —
+      // sur un token volatil, le prix réel au moment de la confirmation peut déjà avoir bougé
+      // significativement. On relit le prix frais juste après confirmation pour enregistrer un
+      // point d'entrée honnête, plutôt que de comparer le prix actuel à une valeur déjà périmée
+      // (ce qui peut donner l'illusion d'une perte immédiate qui n'en est pas vraiment une).
+      let entryMarketCapUsd = marketCapUsd;
+      const freshReading = await this.readMarketCap(mint, bondingCurveKey, "position");
+      if (freshReading && freshReading.marketCapUsd > 0) {
+        entryMarketCapUsd = freshReading.marketCapUsd;
+      }
+
       const position: OpenPosition = {
         telegramId: this.telegramId,
         mint,
@@ -451,8 +462,8 @@ export class AutoTrader {
         symbol,
         bondingCurveKey,
         creatorAddress,
-        entryMarketCapUsd: marketCapUsd,
-        lastKnownMarketCapUsd: marketCapUsd,
+        entryMarketCapUsd,
+        lastKnownMarketCapUsd: entryMarketCapUsd,
         lastUpdatedAt: new Date().toISOString(),
         positionSizeUsd,
         remainingPercent: 100,
@@ -483,7 +494,7 @@ export class AutoTrader {
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
         `✅ ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
-          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${marketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`
+          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`
       );
     } catch (err) {
       this.notify(`❌ Échec de l'entrée sur ${escapeHtml(symbol)} (${escapeHtml(name)})... : ${escapeHtml((err as Error).message)}`);
