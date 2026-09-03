@@ -41,7 +41,13 @@ class RpcLimiter {
   }
 }
 
-// Un maximum de 4 appels RPC "qualité" simultanés, avec un léger espacement — suffisant pour
+// Un maximum de 4 appels RPC "qualité/scan" simultanés, avec un léger espacement — suffisant pour
 // rester fluide sans jamais envoyer de vraie rafale, même si des dizaines de tokens sont créés
 // au même moment.
 export const rpcLimiter = new RpcLimiter(4, 150);
+
+// File d'attente SÉPARÉE, dédiée au suivi des positions déjà ouvertes (ton argent en jeu). Sans
+// ça, un afflux de nouveaux tokens à scanner peut retarder la mise à jour du prix de tes positions
+// existantes — inacceptable, car c'est la donnée la plus critique (stop-loss, take-profit, /pnl).
+// Peu de positions à la fois (maxOpenPositions est petit), donc peu de charge à absorber ici.
+export const positionRpcLimiter = new RpcLimiter(3, 0);

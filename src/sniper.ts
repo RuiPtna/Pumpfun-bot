@@ -9,7 +9,7 @@ import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
 import { checkMintAuthorities } from "./mintAuthority";
-import { rpcLimiter } from "./rpcLimiter";
+import { rpcLimiter, positionRpcLimiter } from "./rpcLimiter";
 import { escapeHtml } from "./htmlEscape";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
@@ -152,11 +152,16 @@ export class AutoTrader {
   }
 
   /** Lit le market cap : priorité au compte on-chain de la bonding curve, sinon DexScreener après migration. */
-  private async readMarketCap(mint: string, bondingCurveKey: string | null): Promise<MarketCapReading | null> {
+  private async readMarketCap(
+    mint: string,
+    bondingCurveKey: string | null,
+    priority: "watch" | "position" = "watch"
+  ): Promise<MarketCapReading | null> {
     const solPriceUsd = await getSolPriceUsd();
+    const limiter = priority === "position" ? positionRpcLimiter : rpcLimiter;
 
     if (bondingCurveKey) {
-      const onChain = await rpcLimiter.run(() => fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd));
+      const onChain = await limiter.run(() => fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd));
       if (onChain && !onChain.complete) {
         return {
           marketCapUsd: onChain.marketCapUsd,
@@ -480,7 +485,7 @@ export class AutoTrader {
     try {
       const positions = getOpenPositions(this.telegramId);
       for (const position of positions) {
-        const reading = await this.readMarketCap(position.mint, position.bondingCurveKey);
+        const reading = await this.readMarketCap(position.mint, position.bondingCurveKey, "position");
         if (!reading) continue;
         await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
       }
