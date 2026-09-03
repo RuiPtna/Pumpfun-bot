@@ -44,6 +44,8 @@ export interface StrategyParams {
   tp3SellPercent: number;
   tp4Percent: number;
   tp4SellPercent: number;
+  tp5Percent: number; // dernier palier explicite avant le "moon bag" protégé par le trailing stop
+  tp5SellPercent: number;
   trailingStopPercent: number; // appliqué sur le runner après TP4 (si non entièrement vendu)
 
   /** Durée max (minutes) qu'une position peut rester ouverte sans avoir touché SL ni aucun TP — au-delà, fermeture forcée pour libérer le capital */
@@ -92,9 +94,11 @@ export const defaultParams: StrategyParams = {
   tp2Percent: 50,
   tp2SellPercent: 20,
   tp3Percent: 100,
-  tp3SellPercent: 30,
+  tp3SellPercent: 25,
   tp4Percent: 200,
-  tp4SellPercent: 100, // vend tout le reste à +200%
+  tp4SellPercent: 15, // ne vend plus tout — laisse un petit "moon bag" courir vers TP5
+  tp5Percent: 400,
+  tp5SellPercent: 100, // vend le reste à 5x, sauf si le trailing stop se déclenche avant
   trailingStopPercent: 15,
   maxHoldMinutes: 45,
 
@@ -137,6 +141,8 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "tp3SellPercent",
   "tp4Percent",
   "tp4SellPercent",
+  "tp5Percent",
+  "tp5SellPercent",
   "trailingStopPercent",
   "maxHoldMinutes",
   "maxDailyLossPercent",
