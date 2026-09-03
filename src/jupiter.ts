@@ -37,6 +37,28 @@ async function getSwapTransaction(quote: JupiterQuote, userPublicKey: string, pr
   return data.swapTransaction;
 }
 
+/**
+ * Attend la confirmation d'une transaction en interrogeant directement son statut réel —
+ * même correctif que dans trade.ts : évite un faux "expiré" quand la transaction a en fait
+ * réussi (blockhash de vérification obtenu après coup, différent de celui de la transaction).
+ */
+async function waitForConfirmation(connection: Connection, signature: string, timeoutMs = 60_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const status = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+    if (status.value?.err) {
+      throw new Error(`Transaction échouée on-chain : ${JSON.stringify(status.value.err)}`);
+    }
+    if (status.value?.confirmationStatus === "confirmed" || status.value?.confirmationStatus === "finalized") {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error(
+    "Timeout en attendant la confirmation — vérifie manuellement sur Solscan si la transaction est passée avant de retenter."
+  );
+}
+
 /** Exécute un swap via Jupiter (achat ou vente), en signant et envoyant la transaction. */
 export async function jupiterSwap(
   connection: Connection,
@@ -54,12 +76,7 @@ export async function jupiterSwap(
   tx.sign([signer]);
 
   const signature = await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });
-
-  const latestBlockhash = await connection.getLatestBlockhash();
-  await connection.confirmTransaction(
-    { signature, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight },
-    "confirmed"
-  );
+  await waitForConfirmation(connection, signature);
 
   return signature;
 }
