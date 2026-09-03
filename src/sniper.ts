@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { Connection, Keypair } from "@solana/web3.js";
 import { buyWithFallback } from "./buyWithFallback";
+import { getRawTokenBalance } from "./jupiter";
 import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
@@ -442,6 +443,20 @@ export class AutoTrader {
       } else {
         simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd);
         signature = `PAPER-${Date.now()}`;
+      }
+
+      // Garde-fou anti-position-fantôme : une transaction peut être confirmée sur la blockchain
+      // sans que le token soit réellement reçu (edge case rare mais déjà observé). On vérifie le
+      // solde réel avant d'enregistrer quoi que ce soit — sans ça, le bot croirait détenir une
+      // position qu'il ne peut ni surveiller ni vendre, bloquant un emplacement pour rien.
+      if (this.params.liveTrading) {
+        const balance = await rpcLimiter.run(() => getRawTokenBalance(this.connection, this.signer.publicKey, mint));
+        if (!balance || balance.amountRaw === "0") {
+          this.notify(
+            `❌ Achat sur <b>${escapeHtml(symbol)}</b> confirmé sur la blockchain mais aucun token reçu dans le wallet — position NON enregistrée pour éviter un suivi fantôme. Vérifie manuellement sur Solscan.`
+          );
+          return;
+        }
       }
 
       // Le prix utilisé pour la décision (marketCapUsd) a été lu AVANT d'envoyer la transaction —

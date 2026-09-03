@@ -8,6 +8,7 @@ import { sellWithFallback } from "./sellWithFallback";
 import {
   getTrades,
   getOpenPositions,
+  closePosition,
   getRejectedTokens,
   getAllRejectedTokens,
   getClosedTrades,
@@ -447,6 +448,21 @@ function formatOpenPositions(telegramId: number): string {
   );
   return lines.join("\n\n");
 }
+
+bot.command("forgetposition", (ctx) => {
+  const [, mint] = ctx.message.text.split(" ").filter(Boolean);
+  if (!mint) {
+    ctx.reply("Usage : /forgetposition [adresse_du_token]\n\nÀ utiliser uniquement si le bot pense détenir une position qui n'existe pas réellement dans ton wallet (vérifié via /sell ou Solscan) — ça retire juste l'enregistrement interne, sans tenter de vendre quoi que ce soit.");
+    return;
+  }
+  const existing = getOpenPositions(ctx.from.id).find((p) => p.mint === mint || p.mint.startsWith(mint));
+  if (!existing) {
+    ctx.reply("Aucune position ouverte trouvée avec cette adresse (ou ce préfixe).");
+    return;
+  }
+  closePosition(ctx.from.id, existing.mint);
+  ctx.reply(`✅ Position sur ${existing.symbol} (${existing.name}) retirée du suivi interne. Le slot est libéré.`);
+});
 
 bot.command("openpositions", (ctx) => {
   ctx.reply(formatOpenPositions(ctx.from.id), { parse_mode: "HTML" });
