@@ -1,53 +1,40 @@
 /**
- * Limite le nombre d'appels RPC simultanés à un maximum fixe, avec une file d'attente.
- * Sans ça, un afflux de nouveaux tokens à évaluer en même temps peut déclencher une rafale
- * d'appels RPC (vérification créateur, autorités, etc.) qui sature les limites du fournisseur
- * (Helius) — résultat : les appels échouent en silence et plus aucun token n'aboutit à une
- * décision d'achat.
+ * Limite le nombre RÉEL d'appels RPC par seconde (fenêtre glissante), pas seulement le nombre
+ * d'appels simultanés. Une limite de "concurrence" seule ne suffit pas : avec des appels rapides,
+ * le débit réel peut largement dépasser ce qu'un fournisseur comme Helius autorise, provoquant
+ * des erreurs "429 Too Many Requests" en boucle qui bloquent tout le pipeline d'achat.
  */
 class RpcLimiter {
-  private activeCount = 0;
-  private queue: (() => void)[] = [];
+  private timestamps: number[] = [];
 
-  constructor(private maxConcurrent: number, private minDelayMs: number) {}
+  constructor(private maxPerSecond: number) {}
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire();
-    try {
-      return await fn();
-    } finally {
-      this.release();
+    await this.waitForSlot();
+    return fn();
+  }
+
+  private async waitForSlot(): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+      this.timestamps = this.timestamps.filter((t) => now - t < 1000);
+
+      if (this.timestamps.length < this.maxPerSecond) {
+        this.timestamps.push(now);
+        return;
+      }
+
+      const oldest = this.timestamps[0];
+      const waitMs = 1000 - (now - oldest) + 20;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
-  }
-
-  private acquire(): Promise<void> {
-    return new Promise((resolve) => {
-      const tryAcquire = () => {
-        if (this.activeCount < this.maxConcurrent) {
-          this.activeCount++;
-          setTimeout(resolve, this.minDelayMs);
-        } else {
-          this.queue.push(tryAcquire);
-        }
-      };
-      tryAcquire();
-    });
-  }
-
-  private release(): void {
-    this.activeCount--;
-    const next = this.queue.shift();
-    if (next) next();
   }
 }
 
-// Un maximum de 4 appels RPC "qualité/scan" simultanés, avec un léger espacement — suffisant pour
-// rester fluide sans jamais envoyer de vraie rafale, même si des dizaines de tokens sont créés
-// au même moment.
-export const rpcLimiter = new RpcLimiter(4, 150);
+// Budget dédié au scan des nouveaux tokens candidats (prix + vérifications qualité).
+export const rpcLimiter = new RpcLimiter(5);
 
-// File d'attente SÉPARÉE, dédiée au suivi des positions déjà ouvertes (ton argent en jeu). Sans
-// ça, un afflux de nouveaux tokens à scanner peut retarder la mise à jour du prix de tes positions
+// Budget SÉPARÉ, dédié au suivi des positions déjà ouvertes (ton argent en jeu). Sans ça, un
+// afflux de nouveaux tokens à scanner peut retarder la mise à jour du prix de tes positions
 // existantes — inacceptable, car c'est la donnée la plus critique (stop-loss, take-profit, /pnl).
-// Peu de positions à la fois (maxOpenPositions est petit), donc peu de charge à absorber ici.
-export const positionRpcLimiter = new RpcLimiter(3, 0);
+export const positionRpcLimiter = new RpcLimiter(3);

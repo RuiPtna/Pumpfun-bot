@@ -412,7 +412,7 @@ export class AutoTrader {
       const positionSizeSol = positionSizeUsd / solPriceUsd;
 
       if (this.params.liveTrading) {
-        const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
+        const balanceLamports = await rpcLimiter.run(() => this.connection.getBalance(this.signer.publicKey));
         const balanceSol = balanceLamports / 1_000_000_000;
         if (balanceSol - positionSizeSol - this.params.priorityFeeSol - 0.001 < this.params.reserveSolBalance) {
           this.rejectWatch(mint, "solde insuffisant pour garder la réserve de sécurité", score);
@@ -479,7 +479,7 @@ export class AutoTrader {
   }
 
   private async getRealCapitalUsd(solPriceUsd: number): Promise<number> {
-    const balanceLamports = await this.connection.getBalance(this.signer.publicKey);
+    const balanceLamports = await rpcLimiter.run(() => this.connection.getBalance(this.signer.publicKey));
     return (balanceLamports / 1_000_000_000) * solPriceUsd;
   }
 
