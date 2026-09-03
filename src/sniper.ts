@@ -717,3 +717,36 @@ export async function manualSellPosition(
 
   return signature;
 }
+
+/**
+ * Rafraîchit immédiatement le prix connu de toutes les positions ouvertes d'un utilisateur,
+ * indépendamment du cycle de fond (toutes les 5s). Utilisé par le bouton "Actualiser" de /pnl
+ * pour garantir une valeur vraiment à jour au moment où l'utilisateur la demande, plutôt que
+ * d'attendre le prochain passage du cycle automatique.
+ */
+export async function refreshOpenPositionsPrices(telegramId: number, connection: Connection): Promise<void> {
+  const positions = getOpenPositions(telegramId);
+  const solPriceUsd = await getSolPriceUsd();
+
+  for (const position of positions) {
+    let marketCapUsd: number | null = null;
+
+    if (position.bondingCurveKey) {
+      const onChain = await positionRpcLimiter.run(() =>
+        fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
+      );
+      if (onChain && !onChain.complete) marketCapUsd = onChain.marketCapUsd;
+    }
+
+    if (marketCapUsd === null) {
+      const dex = await fetchDexScreenerData(position.mint);
+      if (dex && dex.marketCapUsd > 0) marketCapUsd = dex.marketCapUsd;
+    }
+
+    if (marketCapUsd !== null) {
+      position.lastKnownMarketCapUsd = marketCapUsd;
+      position.lastUpdatedAt = new Date().toISOString();
+      saveOpenPosition(position);
+    }
+  }
+}

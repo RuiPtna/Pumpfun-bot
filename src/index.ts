@@ -18,7 +18,7 @@ import {
   getUserParams,
   saveUserParams,
 } from "./db";
-import { AutoTrader, manualSellPosition } from "./sniper";
+import { AutoTrader, manualSellPosition, refreshOpenPositionsPrices } from "./sniper";
 import { escapeHtml } from "./htmlEscape";
 import { defaultParams, numericParamKeys, booleanParamKeys, StrategyParams } from "./config";
 
@@ -466,7 +466,8 @@ function pnlKeyboard(telegramId: number) {
   return Markup.inlineKeyboard([...sellButtons, [Markup.button.callback("🔄 Actualiser", "menu_pnl")], [backToMenuButton()]]);
 }
 
-bot.command("pnl", (ctx) => {
+bot.command("pnl", async (ctx) => {
+  await refreshOpenPositionsPrices(ctx.from.id, connection).catch(() => {});
   ctx.reply(formatPnl(ctx.from.id), { parse_mode: "HTML", ...pnlKeyboard(ctx.from.id) });
 });
 
@@ -758,8 +759,9 @@ bot.command("dashboard", (ctx) => {
 
 // --- Boutons du menu principal ---
 bot.action("menu_pnl", async (ctx) => {
-  await ctx.answerCbQuery();
+  await ctx.answerCbQuery("🔄 Actualisation...");
   const telegramId = ctx.from!.id;
+  await refreshOpenPositionsPrices(telegramId, connection).catch(() => {});
   const text = formatPnl(telegramId);
   await editOrReply(ctx, text, pnlKeyboard(telegramId));
 });
