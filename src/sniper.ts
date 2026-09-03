@@ -93,6 +93,10 @@ export class AutoTrader {
     this.positionPollInterval = null;
     this.ws?.close();
     this.ws = null;
+    // Nettoyage défensif : un cycle en cours au moment de l'arrêt pourrait laisser ces verrous
+    // bloqués à "true" indéfiniment, empêchant tout futur cycle de démarrer après un redémarrage.
+    this.evaluatingMints.clear();
+    this.isPollingPositions = false;
     this.notify("⏹️ Auto-trading arrêté.");
   }
 
@@ -571,6 +575,15 @@ export class AutoTrader {
     gainPercent: number,
     reason: string
   ): Promise<void> {
+    // Garde-fou définitif anti-double-vente : on revérifie l'état RÉEL en base juste avant
+    // d'agir, quelle que soit la cause d'un éventuel chevauchement (redémarrage pendant un
+    // cycle en cours, etc.). Si la position a déjà été fermée ou modifiée entre-temps par un
+    // autre chemin, on annule cette tentative plutôt que de vendre en double.
+    const stillOpen = getOpenPositions(this.telegramId).find((p) => p.mint === position.mint);
+    if (!stillOpen || stillOpen.remainingPercent <= 0 || stillOpen.remainingPercent < position.remainingPercent) {
+      return;
+    }
+
     try {
       let signature: string;
       let fallbackNote = "";
