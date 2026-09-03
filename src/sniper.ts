@@ -28,6 +28,9 @@ import {
 const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : uniquement subscribeNewToken ici
 const WATCH_POLL_INTERVAL_MS = 20_000;
 const POSITION_POLL_INTERVAL_MS = 5_000; // réduit de 15s pour réagir plus vite sur les positions ouvertes
+// Limite technique (indépendante des réglages métier) : au-delà, on arrête d'observer un token
+// qui ne s'est jamais décidé, pour libérer les ressources — voir le commentaire dans beginWatching.
+const WATCH_TECHNICAL_TIMEOUT_MINUTES = 90;
 
 interface MarketCapReading {
   marketCapUsd: number;
@@ -138,10 +141,14 @@ export class AutoTrader {
     this.evalIntervals.set(mint, interval);
     setTimeout(() => this.evaluateWatch(mint), 3_000);
 
-    // Plafonné à ~24 jours : au-delà, setTimeout de Node.js déborde et se déclenche immédiatement
-    // au lieu d'attendre (limite technique des entiers 32 bits), ce qui casserait un "sans plafond".
-    const expiryDelayMs = Math.min((this.params.maxAgeMinutes * 60 + 30) * 1000, 2_000_000_000);
-    setTimeout(() => this.finalizeWatchIfExpired(mint), expiryDelayMs);
+    // Séparé du "maxAgeMinutes" métier (qui peut être très large, voire sans plafond réel) :
+    // ici c'est une limite purement TECHNIQUE, pour libérer les ressources (minuteur + mémoire)
+    // d'un token qui ne s'est jamais décidé. Sans ça, chaque token jamais acheté reste observé
+    // pour toujours (tant que le processus tourne), accumulant des centaines/milliers de
+    // minuteurs actifs au fil du temps — chacun déclenchant des appels RPC toutes les 20s —
+    // jusqu'à saturer complètement le débit RPC disponible et bloquer tous les achats.
+    const technicalTimeoutMs = Math.min(WATCH_TECHNICAL_TIMEOUT_MINUTES * 60 * 1000, (this.params.maxAgeMinutes * 60 + 30) * 1000, 2_000_000_000);
+    setTimeout(() => this.finalizeWatchIfExpired(mint), technicalTimeoutMs);
   }
 
   /** Lit le market cap : priorité au compte on-chain de la bonding curve, sinon DexScreener après migration. */
