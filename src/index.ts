@@ -328,18 +328,41 @@ bot.command("set", (ctx) => {
   const [, key, valueStr] = ctx.message.text.split(" ").filter(Boolean);
   const p = getParams(ctx.from.id);
 
-  if (!key || !valueStr || !numericParamKeys.includes(key as keyof StrategyParams)) {
-    ctx.reply(`Usage : /set [clé] [valeur]\nClés valides : ${numericParamKeys.join(", ")}`);
+  if (!key || !valueStr) {
+    ctx.reply(
+      `Usage : /set [clé] [valeur]\nClés numériques : ${numericParamKeys.join(", ")}\nClés on/off : ${booleanParamKeys.join(", ")} (valeur : true/false ou on/off)`
+    );
     return;
   }
-  const value = Number(valueStr);
-  if (Number.isNaN(value)) {
-    ctx.reply("La valeur doit être un nombre.");
+
+  if (numericParamKeys.includes(key as keyof StrategyParams)) {
+    const value = Number(valueStr);
+    if (Number.isNaN(value)) {
+      ctx.reply("La valeur doit être un nombre.");
+      return;
+    }
+    (p as any)[key] = value;
+    persistParams(ctx.from.id);
+    ctx.reply(`✅ ${key} = ${value}`);
     return;
   }
-  (p as any)[key] = value;
-  persistParams(ctx.from.id);
-  ctx.reply(`✅ ${key} = ${value}`);
+
+  if (booleanParamKeys.includes(key as keyof StrategyParams)) {
+    const normalized = valueStr.toLowerCase();
+    if (!["true", "false", "on", "off"].includes(normalized)) {
+      ctx.reply("La valeur doit être true/false ou on/off.");
+      return;
+    }
+    const value = normalized === "true" || normalized === "on";
+    (p as any)[key] = value;
+    persistParams(ctx.from.id);
+    ctx.reply(`✅ ${key} = ${value}`);
+    return;
+  }
+
+  ctx.reply(
+    `Clé inconnue.\nClés numériques : ${numericParamKeys.join(", ")}\nClés on/off : ${booleanParamKeys.join(", ")}`
+  );
 });
 
 bot.command("live", (ctx) => {
@@ -693,6 +716,15 @@ function resetConfirmKeyboard() {
     [Markup.button.callback("❌ Annuler", "cancel_reset_paper")],
   ]);
 }
+
+bot.command("resetconfig", (ctx) => {
+  const telegramId = ctx.from.id;
+  paramsByUser.set(telegramId, { ...defaultParams });
+  saveUserParams(telegramId, { ...defaultParams });
+  ctx.reply(
+    "✅ Config remise aux valeurs par défaut actuelles du code (celles qu'on a mises au point ensemble dans config.ts). Tout réglage fait via /set, /live ou /pausefeature avant ça a été effacé."
+  );
+});
 
 bot.command("resetpaper", (ctx) => {
   ctx.reply(
