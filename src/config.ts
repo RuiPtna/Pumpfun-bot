@@ -76,7 +76,7 @@ export const defaultParams: StrategyParams = {
 
   minAgeMinutes: 4,
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 4 min compte désormais
-  minMarketCapUsd: 10000,
+  minMarketCapUsd: 30000,
   maxMarketCapUsd: 100000000, // pas de plafond réel — seul le minimum de $10k compte désormais
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 15,
@@ -89,15 +89,15 @@ export const defaultParams: StrategyParams = {
   minEntryScore: 70,
 
   stopLossPercent: -15,
-  tp1Percent: 50,
+  tp1Percent: 30,
   tp1SellPercent: 50, // sécurise la moitié de la position dès un gain solide — le vrai levier
-  tp2Percent: 100,
+  tp2Percent: 60,
   tp2SellPercent: 25,
-  tp3Percent: 200,
+  tp3Percent: 120,
   tp3SellPercent: 15,
-  tp4Percent: 400,
+  tp4Percent: 250,
   tp4SellPercent: 7, // ne vend plus tout — laisse un petit "moon bag" courir vers TP5
-  tp5Percent: 800,
+  tp5Percent: 500,
   tp5SellPercent: 100, // vend le reste (≈3%) au dernier palier, sauf si le trailing stop se déclenche avant
   trailingStopPercent: 15,
   maxHoldMinutes: 45,
