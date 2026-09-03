@@ -76,7 +76,7 @@ export const defaultParams: StrategyParams = {
 
   minAgeMinutes: 4,
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 4 min compte désormais
-  minMarketCapUsd: 30000,
+  minMarketCapUsd: 35000,
   maxMarketCapUsd: 100000000, // pas de plafond réel — seul le minimum de $10k compte désormais
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 15,
