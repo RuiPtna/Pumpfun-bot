@@ -77,7 +77,7 @@ export const defaultParams: StrategyParams = {
   minAgeMinutes: 4,
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 4 min compte désormais
   minMarketCapUsd: 35000,
-  maxMarketCapUsd: 100000000, // pas de plafond réel — seul le minimum de $10k compte désormais
+  maxMarketCapUsd: 500000, // au-delà, trop tard dans le cycle du token, peu de potentiel de hausse restant
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 20,
   minCreatorInitialBuySol: 0.2,
