@@ -55,6 +55,12 @@ export class AutoTrader {
   // qui se corrompent en cascade. Ces verrous empêchent ce chevauchement.
   private evaluatingMints = new Set<string>();
   private isPollingPositions = false;
+  // Évite de marteler une vente qui échoue en boucle (ex. token temporairement illiquide juste
+  // après migration) — sans ça, une position bloquée retenterait toutes les 2s indéfiniment,
+  // spammant des erreurs et saturant le débit RPC pour rien.
+  private recentSellFailures = new Map<string, number>();
+  private sellFailureCounts = new Map<string, number>();
+  private readonly SELL_RETRY_COOLDOWN_MS = 30_000;
 
   constructor(
     private telegramId: number,
@@ -561,7 +567,7 @@ export class AutoTrader {
     const gainPercent = ((currentMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100;
 
     if (gainPercent <= this.params.stopLossPercent) {
-      await this.exitPosition(position, 100, gainPercent, `🛑 <b>Stop-loss</b> déclenché (${gainPercent.toFixed(1)}%)`);
+      await this.exitPosition(position, 100, gainPercent, `🛑 <b>Stop-loss</b> déclenché (${gainPercent.toFixed(1)}%)`, true);
       return;
     }
 
@@ -607,7 +613,8 @@ export class AutoTrader {
           position,
           100,
           gainPercent,
-          `📉 <b>Trailing stop</b> déclenché (-${dropFromPeakPercent.toFixed(1)}% depuis le plus haut)`
+          `📉 <b>Trailing stop</b> déclenché (-${dropFromPeakPercent.toFixed(1)}% depuis le plus haut)`,
+          true
         );
       }
     }
@@ -619,7 +626,8 @@ export class AutoTrader {
     position: OpenPosition,
     sellPercent: number,
     gainPercent: number,
-    reason: string
+    reason: string,
+    isUrgent = false
   ): Promise<void> {
     // Garde-fou définitif anti-double-vente : on revérifie l'état RÉEL en base juste avant
     // d'agir, quelle que soit la cause d'un éventuel chevauchement (redémarrage pendant un
@@ -629,6 +637,26 @@ export class AutoTrader {
     if (!stillOpen || stillOpen.remainingPercent <= 0 || stillOpen.remainingPercent < position.remainingPercent) {
       return;
     }
+
+    // Pause après un échec récent — évite de marteler une vente qui échoue en boucle (token
+    // temporairement illiquide, RPC saturé, etc.). SAUF pour une sortie urgente (stop-loss) :
+    // là, chaque seconde compte pendant un dump rapide — attendre 30s pendant que le prix
+    // continue de s'effondrer transformerait une perte de -15% prévue en une perte de -90%
+    // réelle. Le stop-loss retente donc presque immédiatement (3s), pas 30s.
+    const failureCount = this.sellFailureCounts.get(position.mint) ?? 0;
+    const cooldownMs = isUrgent ? 3_000 : this.SELL_RETRY_COOLDOWN_MS;
+    const lastFailure = this.recentSellFailures.get(position.mint);
+    if (lastFailure && Date.now() - lastFailure < cooldownMs) {
+      return;
+    }
+
+    // Sur une sortie urgente qui a déjà échoué, on élargit progressivement la tolérance de
+    // glissement — pendant un vrai dump, le prix continue de bouger plus vite que la tolérance
+    // initiale ne le permet ; mieux vaut sortir à un prix un peu pire que rester coincé à
+    // attendre indéfiniment pendant que la position continue de s'effondrer.
+    const effectiveSlippage = isUrgent
+      ? Math.min(this.params.maxSlippagePercent + failureCount * 8, 40)
+      : this.params.maxSlippagePercent;
 
     try {
       let signature: string;
@@ -640,7 +668,7 @@ export class AutoTrader {
           this.signer,
           position.mint,
           `${sellPercent}%`,
-          this.params.maxSlippagePercent,
+          effectiveSlippage,
           this.params.priorityFeeSol
         );
         signature = result.signature;
@@ -706,6 +734,10 @@ export class AutoTrader {
         saveOpenPosition(position);
       }
 
+      // Succès : on efface tout échec précédemment enregistré pour ce token.
+      this.recentSellFailures.delete(position.mint);
+      this.sellFailureCounts.delete(position.mint);
+
       const pnlSign = pnlUsdForSlice >= 0 ? "+" : "";
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : " (paper)";
       this.notify(
@@ -713,6 +745,8 @@ export class AutoTrader {
           `Vendu ${sellPercent}% — <b>${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}%</b> (${pnlSign}$${pnlUsdForSlice.toFixed(2)})${txLine}${fallbackNote}`
       );
     } catch (err) {
+      this.recentSellFailures.set(position.mint, Date.now());
+      this.sellFailureCounts.set(position.mint, failureCount + 1);
       this.notify(`❌ Échec de la vente sur ${escapeHtml(position.symbol)} (${escapeHtml(position.name)})... : ${escapeHtml((err as Error).message)}`);
     }
   }
