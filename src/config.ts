@@ -108,7 +108,7 @@ export const defaultParams: StrategyParams = {
   minScoreAfterPause: 80,
   pauseFeatureEnabled: false,
 
-  maxSlippagePercent: 6,
+  maxSlippagePercent: 15,
   priorityFeeSol: 0.0005,
   reserveSolBalance: 0.05,
 
