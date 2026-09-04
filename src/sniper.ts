@@ -566,8 +566,19 @@ export class AutoTrader {
 
     const gainPercent = ((currentMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100;
 
-    if (gainPercent <= this.params.stopLossPercent) {
-      await this.exitPosition(position, 100, gainPercent, `🛑 <b>Stop-loss</b> déclenché (${gainPercent.toFixed(1)}%)`, true);
+    // Une fois TP1 touché, le stop-loss remonte au point d'équilibre (prix d'entrée) au lieu de
+    // rester à son seuil initial — technique bien documentée ("stop à l'équilibre") : le pire
+    // résultat possible sur un trade qui a déjà sécurisé un premier palier devient neutre, plus
+    // jamais une vraie perte, quel que soit le seuil de stop-loss configuré à l'origine.
+    const effectiveStopLossPercent =
+      position.takeProfitLevelsHit.length > 0 ? Math.max(this.params.stopLossPercent, 0) : this.params.stopLossPercent;
+
+    if (gainPercent <= effectiveStopLossPercent) {
+      const stopReason =
+        effectiveStopLossPercent === 0 && this.params.stopLossPercent !== 0
+          ? `🛡️ <b>Stop à l'équilibre</b> déclenché (${gainPercent.toFixed(1)}%)`
+          : `🛑 <b>Stop-loss</b> déclenché (${gainPercent.toFixed(1)}%)`;
+      await this.exitPosition(position, 100, gainPercent, stopReason, true);
       return;
     }
 

@@ -86,18 +86,18 @@ export const defaultParams: StrategyParams = {
   maxTopHolderPercent: 40,
   maxTop10HolderPercent: 75,
 
-  minEntryScore: 60,
+  minEntryScore: 45,
 
   stopLossPercent: -15,
-  tp1Percent: 30,
-  tp1SellPercent: 50, // sécurise la moitié de la position dès un gain solide — le vrai levier
-  tp2Percent: 60,
+  tp1Percent: 100,
+  tp1SellPercent: 50, // vend 50% à 2x = récupère exactement 100% du capital investi — le trade devient "gratuit"
+  tp2Percent: 200,
   tp2SellPercent: 25,
-  tp3Percent: 120,
+  tp3Percent: 400,
   tp3SellPercent: 15,
-  tp4Percent: 250,
+  tp4Percent: 800,
   tp4SellPercent: 7, // ne vend plus tout — laisse un petit "moon bag" courir vers TP5
-  tp5Percent: 500,
+  tp5Percent: 1600,
   tp5SellPercent: 100, // vend le reste (≈3%) au dernier palier, sauf si le trailing stop se déclenche avant
   trailingStopPercent: 15,
   maxHoldMinutes: 45,
