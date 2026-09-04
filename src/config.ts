@@ -79,14 +79,14 @@ export const defaultParams: StrategyParams = {
   minMarketCapUsd: 35000,
   maxMarketCapUsd: 100000000, // pas de plafond réel — seul le minimum de $10k compte désormais
   minRealSolInvested: 1,
-  maxCreatorHoldingPercent: 15,
-  minCreatorInitialBuySol: 0.5,
-  minBondingCurveProgressPercent: 15,
+  maxCreatorHoldingPercent: 20,
+  minCreatorInitialBuySol: 0.2,
+  minBondingCurveProgressPercent: 10,
   requireRevokedAuthorities: true,
-  maxTopHolderPercent: 35,
-  maxTop10HolderPercent: 70,
+  maxTopHolderPercent: 40,
+  maxTop10HolderPercent: 75,
 
-  minEntryScore: 70,
+  minEntryScore: 60,
 
   stopLossPercent: -15,
   tp1Percent: 30,
