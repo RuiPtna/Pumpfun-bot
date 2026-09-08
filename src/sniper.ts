@@ -60,7 +60,7 @@ export class AutoTrader {
   private evalIntervals = new Map<string, NodeJS.Timeout>();
   private peakMarketCaps = new Map<string, number>();
   private positionPollInterval: NodeJS.Timeout | null = null;
-  private notify: (msg: string) => void;
+  private notify: (msg: string, extra?: any) => void;
 
   // Verrous anti-chevauchement : un setInterval ne garantit PAS que le cycle précédent soit
   // terminé avant d'en lancer un nouveau. Si un cycle prend plus de temps que l'intervalle
@@ -86,7 +86,7 @@ export class AutoTrader {
     private connection: Connection,
     private signer: Keypair,
     private params: StrategyParams,
-    notifyFn: (msg: string) => void
+    notifyFn: (msg: string, extra?: any) => void
   ) {
     this.notify = notifyFn;
   }
@@ -645,7 +645,8 @@ export class AutoTrader {
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
         `${BUY_FLAVOR_PHRASES[Math.floor(Math.random() * BUY_FLAVOR_PHRASES.length)]} — ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
-          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`
+          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`,
+        { reply_markup: { inline_keyboard: [[{ text: "📈 Voir sur DexScreener", url: `https://dexscreener.com/solana/${mint}` }]] } }
       );
     } catch (err) {
       this.notify(`❌ Échec de l'entrée sur ${escapeHtml(symbol)} (${escapeHtml(name)})... : ${escapeHtml((err as Error).message)}`);

@@ -419,7 +419,7 @@ bot.command("live", async (ctx) => {
   }
 });
 
-function setAutotrade(telegramId: number, mode: "on" | "off", sendMessage: (msg: string) => void): string {
+function setAutotrade(telegramId: number, mode: "on" | "off", sendMessage: (msg: string, extra?: any) => void): string {
   const params = getParams(telegramId);
 
   if (mode === "on") {
@@ -446,7 +446,7 @@ bot.command("autotrade", (ctx) => {
     return;
   }
   const telegramId = ctx.from.id;
-  ctx.reply(setAutotrade(telegramId, mode, (msg) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML" }).catch(() => {})));
+  ctx.reply(setAutotrade(telegramId, mode, (msg, extra) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML", ...extra }).catch(() => {})));
 });
 
 function formatOpenPositions(telegramId: number): string {
@@ -670,7 +670,10 @@ bot.command("resume", (ctx) => {
 async function formatDashboard(telegramId: number): Promise<string> {
   const params = getParams(telegramId);
   const state = getBotState(telegramId, params.startingCapitalUsd);
-  const closedTrades = getClosedTrades(telegramId);
+  // On ne garde que les trades du MODE ACTUEL (paper ou live) — mélanger les deux fausserait
+  // complètement le win rate et le drawdown affichés, qui n'ont de sens que dans un seul
+  // contexte à la fois (argent simulé vs argent réel).
+  const closedTrades = getClosedTrades(telegramId).filter((t) => t.wasPaper === !params.liveTrading);
   const openPositions = getOpenPositions(telegramId);
 
   const wins = closedTrades.filter((t) => t.pnlUsd > 0);
@@ -770,9 +773,13 @@ function resetPaperData(telegramId: number): string {
 
   state.paperCapitalUsd = params.startingCapitalUsd;
   state.consecutiveLosses = 0;
+  state.consecutiveWins = 0;
   state.pausedUntil = null;
   state.tokensScanned = 0;
   state.tokensRejected = 0;
+  // Sans ça, le "Max drawdown" affiché resterait celui d'avant le reset — trompeur juste après
+  // avoir remis le capital à zéro.
+  state.capitalHistory = [{ t: new Date().toISOString(), capital: params.startingCapitalUsd }];
   saveBotState(telegramId, state);
 
   clearPaperClosedTrades(telegramId);
@@ -911,21 +918,39 @@ bot.action("menu_config", async (ctx) => {
 bot.action("menu_auto_on", async (ctx) => {
   await ctx.answerCbQuery();
   const telegramId = ctx.from!.id;
-  ctx.reply(setAutotrade(telegramId, "on", (msg) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML" }).catch(() => {})));
+  ctx.reply(setAutotrade(telegramId, "on", (msg, extra) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML", ...extra }).catch(() => {})));
 });
 bot.action("menu_auto_off", async (ctx) => {
   await ctx.answerCbQuery();
   const telegramId = ctx.from!.id;
-  ctx.reply(setAutotrade(telegramId, "off", (msg) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML" }).catch(() => {})));
+  ctx.reply(setAutotrade(telegramId, "off", (msg, extra) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML", ...extra }).catch(() => {})));
 });
 
 // Capture le texte libre uniquement pour le flux guidé de retrait (adresse puis montant).
 // Placé après toutes les commandes : un message commençant par "/" est déjà intercepté
 // par le bon bot.command() avant d'arriver ici.
+bot.command("cancel", (ctx) => {
+  const telegramId = ctx.from.id;
+  if (pendingWithdrawals.has(telegramId)) {
+    pendingWithdrawals.delete(telegramId);
+    ctx.reply("✅ Annulé. Rien n'a été envoyé.");
+  } else {
+    ctx.reply("Rien à annuler pour l'instant.");
+  }
+});
+
 bot.on("text", async (ctx) => {
   const telegramId = ctx.from.id;
   const pending = pendingWithdrawals.get(telegramId);
-  if (!pending) return;
+  if (!pending) {
+    const text = ctx.message.text.trim();
+    if (text.startsWith("/")) {
+      ctx.reply("Commande inconnue. Tape /help pour la liste complète, ou /menu pour les boutons.");
+    } else {
+      ctx.reply("Je n'ai pas compris 🤔 — tape /menu pour voir les options.");
+    }
+    return;
+  }
 
   const text = ctx.message.text.trim();
 
@@ -933,11 +958,11 @@ bot.on("text", async (ctx) => {
     try {
       new PublicKey(text); // valide le format, lève une erreur sinon
     } catch {
-      ctx.reply("Adresse invalide, réessaie (colle l'adresse Solana complète) :");
+      ctx.reply("Adresse invalide, réessaie (colle l'adresse Solana complète), ou /cancel pour annuler :");
       return;
     }
     pendingWithdrawals.set(telegramId, { step: "amount", address: text });
-    ctx.reply("Combien de SOL veux-tu envoyer ? (un nombre, ou 'all' pour tout retirer)");
+    ctx.reply("Combien de SOL veux-tu envoyer ? (un nombre, 'all' pour tout retirer, ou /cancel pour annuler)");
     return;
   }
 
