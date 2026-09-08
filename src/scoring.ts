@@ -8,6 +8,10 @@ export interface TokenWatch {
   creatorAddress: string | null;
   creatorInitialBuySol: number;
   createdAt: number;
+  /** "pumpfun" (détection native, bien établie) ou "other" (flux multi-plateformes, moins vérifié) */
+  platform: "pumpfun" | "other";
+  /** Nom du pool à utiliser pour l'achat/vente via PumpPortal (ex. "bonk" pour LetsBonk) */
+  poolHint: string | null;
   mcHistory: { t: number; marketCapUsd: number }[];
   realSolHistory: { t: number; realSol: number }[];
   lastLiquidityUsd: number;
@@ -26,7 +30,9 @@ export function createTokenWatch(
   bondingCurveKey: string | null,
   creatorAddress: string | null,
   creatorInitialBuySol: number,
-  createdAt: number
+  createdAt: number,
+  platform: "pumpfun" | "other" = "pumpfun",
+  poolHint: string | null = null
 ): TokenWatch {
   return {
     mint,
@@ -36,6 +42,8 @@ export function createTokenWatch(
     creatorAddress,
     creatorInitialBuySol,
     createdAt,
+    platform,
+    poolHint,
     mcHistory: [],
     realSolHistory: [],
     lastLiquidityUsd: 0,
@@ -209,7 +217,10 @@ export function passesHardFilters(
       return { ok: false, reason: "pas assez de SOL réellement investi (token probablement mort/sans acheteurs)" };
     }
 
-    if (watch.lastBondingCurveProgressPercent < params.minBondingCurveProgressPercent) {
+    // La progression de bonding curve utilise une formule spécifique au protocole pump.fun —
+    // pas applicable aux autres plateformes (mécaniques de bonding curve différentes). On se
+    // contente du filtre "SOL réellement investi" ci-dessus pour celles-ci.
+    if (watch.platform === "pumpfun" && watch.lastBondingCurveProgressPercent < params.minBondingCurveProgressPercent) {
       return {
         ok: false,
         reason: `progression de la bonding curve trop faible (${watch.lastBondingCurveProgressPercent.toFixed(0)}%, min ${params.minBondingCurveProgressPercent}%)`,

@@ -26,6 +26,8 @@ export interface StrategyParams {
   minBondingCurveProgressPercent: number;
   /** Rejette les tokens dont l'autorité de mint ou de freeze n'est pas révoquée (protection anti-honeypot) */
   requireRevokedAuthorities: boolean;
+  /** Active la détection sur d'autres plateformes (LetsBonk, etc.) via un flux tiers moins établi que PumpPortal — désactivé par défaut, à activer volontairement après tests en paper */
+  enableMultiPlatform: boolean;
   /** % max détenu par le plus gros holder avant d'acheter (rejette si dépassé) */
   maxTopHolderPercent: number;
   /** % max détenu cumulé par les 10 plus gros holders avant d'acheter */
@@ -83,6 +85,7 @@ export const defaultParams: StrategyParams = {
   minCreatorInitialBuySol: 0.2,
   minBondingCurveProgressPercent: 10,
   requireRevokedAuthorities: true,
+  enableMultiPlatform: false,
   maxTopHolderPercent: 40,
   maxTop10HolderPercent: 75,
 
@@ -159,4 +162,5 @@ export const booleanParamKeys: (keyof StrategyParams)[] = [
   "liveTrading",
   "pauseFeatureEnabled",
   "requireRevokedAuthorities",
+  "enableMultiPlatform",
 ];
