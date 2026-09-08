@@ -36,6 +36,10 @@ export interface OpenPosition {
   bondingCurveKey: string | null;
   creatorAddress: string | null;
   entryMarketCapUsd: number;
+  /** Prix Jupiter (en $) capturé à l'entrée, si disponible — sert de référence pour calculer
+   * les mises à jour de prix via Jupiter (plus frais que DexScreener), sans avoir besoin de
+   * connaître la supply exacte du token : on applique simplement le même ratio de variation. */
+  entryPriceUsd: number | null;
   /** Dernier market cap connu (mis à jour à chaque poll DexScreener), pour afficher le PnL */
   lastKnownMarketCapUsd: number;
   lastUpdatedAt: string;

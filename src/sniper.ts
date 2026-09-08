@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import { Connection, Keypair } from "@solana/web3.js";
 import { buyWithFallback } from "./buyWithFallback";
 import { connectMultiPlatformFeed } from "./multiPlatformFeed";
-import { getRawTokenBalance } from "./jupiter";
+import { getRawTokenBalance, getJupiterPriceUsd } from "./jupiter";
 import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
@@ -182,15 +182,33 @@ export class AutoTrader {
     }
   }
 
+  /**
+   * Lit le prix d'une position ouverte, en privilégiant l'API Price de Jupiter (dérivée
+   * directement de l'état on-chain, sans le délai de cache propre à DexScreener) quand un
+   * prix de référence a été capturé à l'entrée — on applique le ratio de variation au market
+   * cap d'entrée, sans avoir besoin de connaître la supply exacte du token. Repli sur
+   * l'ancienne méthode (bonding curve / DexScreener) si Jupiter est indisponible.
+   */
+  private async readPositionMarketCapUsd(position: OpenPosition): Promise<number | null> {
+    if (position.entryPriceUsd && position.entryPriceUsd > 0) {
+      const currentPrice = await getJupiterPriceUsd(position.mint);
+      if (currentPrice !== null) {
+        return position.entryMarketCapUsd * (currentPrice / position.entryPriceUsd);
+      }
+    }
+    const reading = await this.readMarketCap(position.mint, position.bondingCurveKey, "position");
+    return reading ? reading.marketCapUsd : null;
+  }
+
   private async checkSinglePosition(mint: string): Promise<void> {
     if (this.checkingPositionMints.has(mint)) return; // une vérification est déjà en cours
     this.checkingPositionMints.add(mint);
     try {
       const position = getOpenPositions(this.telegramId).find((p) => p.mint === mint);
       if (!position) return;
-      const reading = await this.readMarketCap(position.mint, position.bondingCurveKey, "position");
-      if (!reading) return;
-      await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
+      const marketCapUsd = await this.readPositionMarketCapUsd(position);
+      if (marketCapUsd === null) return;
+      await this.updatePositionAndCheckExit(position, marketCapUsd);
     } finally {
       this.checkingPositionMints.delete(mint);
     }
@@ -309,6 +327,10 @@ export class AutoTrader {
         watch.lastLiquidityUsd = dex.liquidityUsd;
         watch.lastBuys5m = dex.buys5m;
         watch.lastSells5m = dex.sells5m;
+        // Le nom/symbole n'est pas toujours fourni par l'événement de détection (ex. migration) —
+        // on le complète dès qu'on a une réponse DexScreener, qui l'inclut systématiquement.
+        if (dex.name && watch.name === "?") watch.name = dex.name;
+        if (dex.symbol && watch.symbol === "?") watch.symbol = dex.symbol;
       }
     }
 
@@ -566,6 +588,10 @@ export class AutoTrader {
         entryMarketCapUsd = freshReading.marketCapUsd;
       }
 
+      // Prix de référence Jupiter, best-effort — permet des mises à jour plus fraîches ensuite
+      // (voir readPositionPriceUsd). Si indisponible, on retombera simplement sur DexScreener.
+      const entryPriceUsd = await getJupiterPriceUsd(mint);
+
       const position: OpenPosition = {
         telegramId: this.telegramId,
         mint,
@@ -574,6 +600,7 @@ export class AutoTrader {
         bondingCurveKey,
         creatorAddress,
         entryMarketCapUsd,
+        entryPriceUsd,
         lastKnownMarketCapUsd: entryMarketCapUsd,
         lastUpdatedAt: new Date().toISOString(),
         positionSizeUsd,
@@ -632,9 +659,9 @@ export class AutoTrader {
     try {
       const positions = getOpenPositions(this.telegramId);
       for (const position of positions) {
-        const reading = await this.readMarketCap(position.mint, position.bondingCurveKey, "position");
-        if (!reading) continue;
-        await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
+        const marketCapUsd = await this.readPositionMarketCapUsd(position);
+        if (marketCapUsd === null) continue;
+        await this.updatePositionAndCheckExit(position, marketCapUsd);
       }
     } finally {
       this.isPollingPositions = false;
@@ -927,7 +954,16 @@ export async function refreshOpenPositionsPrices(telegramId: number, connection:
   for (const position of positions) {
     let marketCapUsd: number | null = null;
 
-    if (position.bondingCurveKey) {
+    // Priorité à Jupiter (prix on-chain frais, sans délai de cache) si on a un prix de
+    // référence capturé à l'entrée — même logique que le suivi automatique des positions.
+    if (position.entryPriceUsd && position.entryPriceUsd > 0) {
+      const currentPrice = await getJupiterPriceUsd(position.mint);
+      if (currentPrice !== null) {
+        marketCapUsd = position.entryMarketCapUsd * (currentPrice / position.entryPriceUsd);
+      }
+    }
+
+    if (marketCapUsd === null && position.bondingCurveKey) {
       const onChain = await positionRpcLimiter.run(() =>
         fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
       );

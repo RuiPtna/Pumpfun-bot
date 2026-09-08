@@ -2,6 +2,27 @@ import { Connection, Keypair, PublicKey, VersionedTransaction } from "@solana/we
 
 const JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote";
 const JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap";
+const JUPITER_PRICE_URL = "https://lite-api.jup.ag/price/v2";
+
+/**
+ * Prix en $ dérivé directement de l'état on-chain via l'API Price de Jupiter — beaucoup plus
+ * frais que DexScreener, qui a son propre délai de cache interne indépendant de la fréquence
+ * à laquelle on l'interroge. Réservé aux positions déjà ouvertes (pas au scan de candidats),
+ * pour garder un volume d'appels raisonnable.
+ */
+export async function getJupiterPriceUsd(mint: string): Promise<number | null> {
+  try {
+    const res = await fetch(`${JUPITER_PRICE_URL}?ids=${mint}`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: Record<string, { price?: string }> };
+    const priceStr = json.data?.[mint]?.price;
+    if (!priceStr) return null;
+    const price = parseFloat(priceStr);
+    return Number.isFinite(price) && price > 0 ? price : null;
+  } catch {
+    return null;
+  }
+}
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 interface JupiterQuote {
