@@ -74,6 +74,17 @@ function isAllowed(telegramId: number): boolean {
  * On ne retombe sur un nouveau message que si l'édition échoue pour une autre raison
  * (message trop vieux, supprimé, etc.).
  */
+/** Barre de progression texte : évolution du portefeuille par rapport au capital de départ. */
+function progressBar(currentUsd: number, startingUsd: number): string {
+  if (startingUsd <= 0) return "";
+  const ratio = currentUsd / startingUsd;
+  // 0.5x → barre vide, 1x → moitié, 2x et plus → pleine (échelle non-linéaire, plus lisible
+  // que de viser un multiple précis arbitraire).
+  const filledCount = Math.max(0, Math.min(10, Math.round(((ratio - 0.5) / 1.5) * 10)));
+  const bar = "🟩".repeat(filledCount) + "⬜".repeat(10 - filledCount);
+  return `${bar} ${ratio.toFixed(2)}x`;
+}
+
 async function editOrReply(ctx: any, text: string, keyboard: ReturnType<typeof Markup.inlineKeyboard>): Promise<void> {
   const options = { parse_mode: "HTML" as const, ...keyboard };
   try {
@@ -87,12 +98,11 @@ async function editOrReply(ctx: any, text: string, keyboard: ReturnType<typeof M
 
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
+    [Markup.button.callback("🟢 Auto ON", "menu_auto_on"), Markup.button.callback("🔴 Auto OFF", "menu_auto_off")],
     [Markup.button.callback("📊 PnL", "menu_pnl"), Markup.button.callback("📂 Positions", "menu_positions")],
     [Markup.button.callback("💰 Solde", "menu_balance"), Markup.button.callback("📈 Dashboard", "menu_dashboard")],
-    [Markup.button.callback("🟢 Auto ON", "menu_auto_on"), Markup.button.callback("🔴 Auto OFF", "menu_auto_off")],
     [Markup.button.callback("🚫 Rejetés", "menu_rejected"), Markup.button.callback("📜 Historique", "menu_history")],
-    [Markup.button.callback("⚙️ Config", "menu_config")],
-    [Markup.button.callback("🧹 Reset Paper", "start_reset_paper")],
+    [Markup.button.callback("⚙️ Config", "menu_config"), Markup.button.callback("🧹 Reset Paper", "start_reset_paper")],
   ]);
 }
 
@@ -714,9 +724,17 @@ async function formatDashboard(telegramId: number): Promise<string> {
   const totalPortfolioValue = cashUsd + openPositionsValueUsd;
   const totalPnl = totalPortfolioValue - startingReferenceUsd;
 
+  const streakLine =
+    state.consecutiveWins >= 3
+      ? `🔥 Série en cours : ${state.consecutiveWins} gains d'affilée !`
+      : state.consecutiveLosses >= 3
+        ? `🥶 Série en cours : ${state.consecutiveLosses} pertes d'affilée`
+        : null;
+
   return [
     `📊 <b>DASHBOARD</b> — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
     "",
+    progressBar(totalPortfolioValue, startingReferenceUsd),
     `Valeur totale du portefeuille : <b>$${totalPortfolioValue.toFixed(2)}</b>`,
     `— dont cash disponible : $${cashUsd.toFixed(2)}`,
     `— dont positions ouvertes : $${openPositionsValueUsd.toFixed(2)}`,
@@ -726,7 +744,7 @@ async function formatDashboard(telegramId: number): Promise<string> {
     `Gain moyen : +$${avgProfit.toFixed(2)} — Perte moyenne : $${avgLoss.toFixed(2)}`,
     `Max drawdown : -${maxDrawdownPercent.toFixed(1)}%`,
     `Tokens scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
-    `Pertes consécutives actuelles : ${state.consecutiveLosses}`,
+    ...(streakLine ? [streakLine] : []),
     state.pausedUntil && params.pauseFeatureEnabled
       ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}`
       : "▶️ Actif",

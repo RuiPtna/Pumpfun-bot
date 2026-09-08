@@ -28,7 +28,19 @@ import {
 } from "./db";
 
 const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : subscribeMigration (stratégie tokens gradués)
-const WATCH_POLL_INTERVAL_MS = 20_000;
+const WATCH_POLL_INTERVAL_MS = 8_000; // resserré : beaucoup moins de candidats à suivre depuis la stratégie "tokens gradués"
+
+const BIG_WIN_PHRASES = ["🎉 Ka-ching !", "🚀 On décolle !", "💰 Dans la poche !", "🔥 Joli coup !", "✨ Bien joué !"];
+const SMALL_WIN_PHRASES = ["✅ Petit gain sécurisé", "👍 Ça avance", "🙂 Dans le vert"];
+const LOSS_PHRASES = ["😬 Ça pique un peu", "🩹 On encaisse", "📉 Pas cette fois", "🫤 Raté"];
+
+const BUY_FLAVOR_PHRASES = ["🎯 Nouveau pari", "🔍 On y va", "🧭 Cap sur", "🌱 Nouvelle graine plantée"];
+
+/** Une petite touche de personnalité sur les messages de sortie — pas juste "vendu X%". */
+function pickExitFlavor(gainPercent: number): string {
+  const pool = gainPercent >= 50 ? BIG_WIN_PHRASES : gainPercent >= 0 ? SMALL_WIN_PHRASES : LOSS_PHRASES;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 const POSITION_POLL_INTERVAL_MS = 2_000; // vérification automatique des positions toutes les 2s (indépendant de tout bouton)
 // Limite technique (indépendante des réglages métier) : au-delà, on arrête d'observer un token
 // qui ne s'est jamais décidé, pour libérer les ressources — voir le commentaire dans beginWatching.
@@ -112,7 +124,7 @@ export class AutoTrader {
       // pas si l'utilisateur a explicitement demandé l'arrêt via /autotrade off.
       if (this.stoppedByUser) return;
       this.notify("🔴 Connexion perdue, reconnexion dans 5s...");
-      setTimeout(() => this.start(), 5000);
+      setTimeout(() => this.start(), 2000);
     });
 
     this.positionPollInterval = setInterval(() => this.pollAllPositions(), POSITION_POLL_INTERVAL_MS);
@@ -632,7 +644,7 @@ export class AutoTrader {
         : `$${positionSizeUsd.toFixed(2)} (simulé)`;
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
-        `✅ ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
+        `${BUY_FLAVOR_PHRASES[Math.floor(Math.random() * BUY_FLAVOR_PHRASES.length)]} — ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
           `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`
       );
     } catch (err) {
@@ -839,12 +851,14 @@ export class AutoTrader {
         const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
         if (gainPercent < 0) {
           state.consecutiveLosses += 1;
+          state.consecutiveWins = 0;
           if (this.params.pauseFeatureEnabled && state.consecutiveLosses >= this.params.consecutiveLossesForPause) {
             state.pausedUntil = new Date(Date.now() + this.params.pauseDurationMinutes * 60_000).toISOString();
             this.notify(`⏸️ ${state.consecutiveLosses} pertes consécutives — pause de ${this.params.pauseDurationMinutes} min`);
           }
         } else {
           state.consecutiveLosses = 0;
+          state.consecutiveWins += 1;
           state.pausedUntil = null;
         }
         saveBotState(this.telegramId, state);
@@ -875,7 +889,7 @@ export class AutoTrader {
       const pnlSign = pnlUsdForSlice >= 0 ? "+" : "";
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : " (paper)";
       this.notify(
-        `${reason} sur <b>${escapeHtml(position.symbol)}</b> (${escapeHtml(position.name)}) <code>${position.mint.slice(0, 6)}...</code>\n` +
+        `${pickExitFlavor(gainPercent)} — ${reason} sur <b>${escapeHtml(position.symbol)}</b> (${escapeHtml(position.name)}) <code>${position.mint.slice(0, 6)}...</code>\n` +
           `Vendu ${sellPercent}% — <b>${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}%</b> (${pnlSign}$${pnlUsdForSlice.toFixed(2)})${txLine}${fallbackNote}`
       );
     } catch (err) {

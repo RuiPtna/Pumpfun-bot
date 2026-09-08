@@ -75,6 +75,8 @@ export interface BotState {
   telegramId: number;
   paperCapitalUsd: number;
   consecutiveLosses: number;
+  /** Série de gains d'affilée en cours — pour l'affichage "streak" dans le dashboard */
+  consecutiveWins: number;
   pausedUntil: string | null;
   dailyStartCapitalUsd: number;
   dailyDate: string; // YYYY-MM-DD, pour détecter le changement de jour
@@ -243,6 +245,7 @@ const defaultBotState = (telegramId: number, startingCapitalUsd: number): BotSta
   telegramId,
   paperCapitalUsd: startingCapitalUsd,
   consecutiveLosses: 0,
+  consecutiveWins: 0,
   pausedUntil: null,
   dailyStartCapitalUsd: startingCapitalUsd,
   dailyDate: new Date().toISOString().slice(0, 10),
@@ -258,6 +261,7 @@ export function getBotState(telegramId: number, startingCapitalUsd = 20): BotSta
   if (existing) {
     if (!existing.capitalHistory) existing.capitalHistory = [{ t: new Date().toISOString(), capital: existing.paperCapitalUsd }];
     if (existing.liveStartingCapitalUsd === undefined) existing.liveStartingCapitalUsd = null;
+    if (existing.consecutiveWins === undefined) existing.consecutiveWins = 0;
     return existing;
   }
   const fresh = defaultBotState(telegramId, startingCapitalUsd);
