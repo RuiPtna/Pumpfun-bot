@@ -729,11 +729,15 @@ export class AutoTrader {
         // Ne jamais vendre plus que ce qu'il reste réellement — un prix très volatile peut
         // franchir plusieurs paliers d'un coup entre deux vérifications.
         const sellPercent = Math.min(level.sell, position.remainingPercent);
-        await this.exitPosition(position, sellPercent, gainPercent, `🎉 <b>${level.key} +${level.gain}%</b> atteint`);
+        // Un palier désactivé (sell=0, ex. stratégie simplifiée à un seul TP) est marqué comme
+        // "atteint" pour ne pas le revérifier sans cesse, mais ne déclenche aucune vente réelle.
+        if (sellPercent > 0) {
+          await this.exitPosition(position, sellPercent, gainPercent, `🎉 <b>${level.key} +${level.gain}%</b> atteint`);
+        }
       }
     }
 
-    if (position.takeProfitLevelsHit.includes(this.params.tp4Percent) && position.remainingPercent > 0) {
+    if (position.takeProfitLevelsHit.includes(this.params.tp1Percent) && position.remainingPercent > 0) {
       const peak = Math.max(this.peakMarketCaps.get(position.mint) ?? currentMarketCapUsd, currentMarketCapUsd);
       this.peakMarketCaps.set(position.mint, peak);
       const dropFromPeakPercent = ((peak - currentMarketCapUsd) / peak) * 100;

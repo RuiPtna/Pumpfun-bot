@@ -76,7 +76,7 @@ export const defaultParams: StrategyParams = {
   positionPercent: 25,
   maxOpenPositions: 2,
 
-  minAgeMinutes: 4,
+  minAgeMinutes: 10, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 4 min compte désormais
   minMarketCapUsd: 35000,
   maxMarketCapUsd: 500000, // au-delà, trop tard dans le cycle du token, peu de potentiel de hausse restant
@@ -92,16 +92,16 @@ export const defaultParams: StrategyParams = {
   minEntryScore: 45,
 
   stopLossPercent: -15,
-  tp1Percent: 100,
-  tp1SellPercent: 50, // vend 50% à 2x = récupère exactement 100% du capital investi — le trade devient "gratuit"
-  tp2Percent: 200,
-  tp2SellPercent: 25,
-  tp3Percent: 400,
-  tp3SellPercent: 15,
-  tp4Percent: 800,
-  tp4SellPercent: 7, // ne vend plus tout — laisse un petit "moon bag" courir vers TP5
-  tp5Percent: 1600,
-  tp5SellPercent: 100, // vend le reste (≈3%) au dernier palier, sauf si le trailing stop se déclenche avant
+  tp1Percent: 30,
+  tp1SellPercent: 90, // vend 90% à +30% = récupère 117% du capital investi, profit déjà garanti
+  tp2Percent: 60,
+  tp2SellPercent: 0, // palier désactivé — stratégie simplifiée à un seul TP + un reliquat qui court
+  tp3Percent: 120,
+  tp3SellPercent: 0,
+  tp4Percent: 250,
+  tp4SellPercent: 0,
+  tp5Percent: 500,
+  tp5SellPercent: 100, // filet de sécurité : vend le reliquat (≈10%) ici si le trailing stop ne s'est pas encore déclenché
   trailingStopPercent: 15,
   maxHoldMinutes: 45,
 
