@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { Connection, Keypair } from "@solana/web3.js";
 import { buyWithFallback } from "./buyWithFallback";
+import { connectMultiPlatformFeed } from "./multiPlatformFeed";
 import { getRawTokenBalance } from "./jupiter";
 import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
@@ -26,7 +27,7 @@ import {
   OpenPosition,
 } from "./db";
 
-const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : uniquement subscribeNewToken ici
+const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : subscribeMigration (stratégie tokens gradués)
 const WATCH_POLL_INTERVAL_MS = 20_000;
 const POSITION_POLL_INTERVAL_MS = 2_000; // vérification automatique des positions toutes les 2s (indépendant de tout bouton)
 // Limite technique (indépendante des réglages métier) : au-delà, on arrête d'observer un token
@@ -42,6 +43,7 @@ interface MarketCapReading {
 
 export class AutoTrader {
   private ws: WebSocket | null = null;
+  private multiPlatformWs: WebSocket | null = null;
   private watches = new Map<string, TokenWatch>();
   private evalIntervals = new Map<string, NodeJS.Timeout>();
   private peakMarketCaps = new Map<string, number>();
@@ -61,6 +63,11 @@ export class AutoTrader {
   private recentSellFailures = new Map<string, number>();
   private sellFailureCounts = new Map<string, number>();
   private readonly SELL_RETRY_COOLDOWN_MS = 30_000;
+  // Suivi temps réel des positions ouvertes (abonnement PumpPortal subscribeTokenTrade) —
+  // limité aux 1-2 positions réellement détenues, jamais aux candidats scannés (trop nombreux,
+  // ça coûterait cher pour rien).
+  private subscribedPositionMints = new Set<string>();
+  private checkingPositionMints = new Set<string>();
 
   constructor(
     private telegramId: number,
@@ -80,7 +87,19 @@ export class AutoTrader {
     this.ws = new WebSocket(PUMPPORTAL_WS);
 
     this.ws.on("open", () => {
-      this.ws?.send(JSON.stringify({ method: "subscribeNewToken" }));
+      // Stratégie "tokens gradués" : on ne s'intéresse plus au tout début de vie d'un token
+      // (bonding curve pump.fun, la fenêtre la plus risquée), seulement au moment où il vient
+      // de graduer vers un vrai pool AMM (Raydium/PumpSwap) — déjà "prouvé" par sa graduation
+      // elle-même, évaluable via DexScreener, exécutable via PumpPortal/Jupiter.
+      this.ws?.send(JSON.stringify({ method: "subscribeMigration" }));
+      // Réabonnement aux positions déjà ouvertes (ex. après une reconnexion ou un redémarrage) —
+      // sans ça, ces positions perdraient le suivi temps réel et retomberaient sur le seul
+      // sondage périodique jusqu'à leur prochaine ouverture/fermeture.
+      const openMints = getOpenPositions(this.telegramId).map((p) => p.mint);
+      if (openMints.length > 0) {
+        this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: openMints }));
+        openMints.forEach((m) => this.subscribedPositionMints.add(m));
+      }
       const mode = this.params.liveTrading ? "🔴 LIVE (argent réel)" : "📝 PAPER (simulation)";
       this.notify(`🟢 Auto-trading démarré — mode ${mode} (bonding curve on-chain + DexScreener)`);
     });
@@ -97,6 +116,14 @@ export class AutoTrader {
     });
 
     this.positionPollInterval = setInterval(() => this.pollAllPositions(), POSITION_POLL_INTERVAL_MS);
+
+    if (this.params.enableMultiPlatform && !this.multiPlatformWs) {
+      this.multiPlatformWs = connectMultiPlatformFeed(
+        (event) =>
+          this.beginWatching(event.mint, event.name, event.symbol, null, event.creatorAddress, event.creatorInitialBuySol, "other", event.pool),
+        (msg) => this.notify(msg)
+      );
+    }
   }
 
   stop(): void {
@@ -107,6 +134,8 @@ export class AutoTrader {
     this.positionPollInterval = null;
     this.ws?.close();
     this.ws = null;
+    this.multiPlatformWs?.close();
+    this.multiPlatformWs = null;
     // Nettoyage défensif : un cycle en cours au moment de l'arrêt pourrait laisser ces verrous
     // bloqués à "true" indéfiniment, empêchant tout futur cycle de démarrer après un redémarrage.
     this.evaluatingMints.clear();
@@ -121,6 +150,16 @@ export class AutoTrader {
     } catch {
       return;
     }
+
+    // Signal de réveil temps réel pour une position déjà ouverte — vérifié en priorité, avant
+    // toute autre interprétation du message.
+    if (data.mint && this.subscribedPositionMints.has(data.mint)) {
+      this.checkSinglePosition(data.mint).catch(() => {});
+      return;
+    }
+
+    // Ancien chemin de détection (création pump.fun, pré-migration) — conservé mais inactif tant
+    // qu'on ne s'abonne qu'à subscribeMigration ; permet de revenir en arrière facilement si besoin.
     if (data.txType === "create" && data.mint) {
       this.beginWatching(
         data.mint,
@@ -130,7 +169,43 @@ export class AutoTrader {
         data.traderPublicKey ?? null,
         typeof data.solAmount === "number" ? data.solAmount : 0
       );
+      return;
     }
+
+    // Événement de migration : le token vient de graduer vers un vrai pool AMM. On ne connaît
+    // pas forcément son créateur/achat initial à ce stade (pas fourni par cet événement) — les
+    // filtres correspondants se désactivent proprement dans ce cas plutôt que de tout rejeter
+    // faute de donnée. bondingCurveKey=null force une lecture via DexScreener dès le départ,
+    // cohérent avec un token déjà gradué.
+    if (data.mint && typeof data.mint === "string") {
+      this.beginWatching(data.mint, data.name ?? "?", data.symbol ?? "?", null, data.creator ?? null, 0);
+    }
+  }
+
+  private async checkSinglePosition(mint: string): Promise<void> {
+    if (this.checkingPositionMints.has(mint)) return; // une vérification est déjà en cours
+    this.checkingPositionMints.add(mint);
+    try {
+      const position = getOpenPositions(this.telegramId).find((p) => p.mint === mint);
+      if (!position) return;
+      const reading = await this.readMarketCap(position.mint, position.bondingCurveKey, "position");
+      if (!reading) return;
+      await this.updatePositionAndCheckExit(position, reading.marketCapUsd);
+    } finally {
+      this.checkingPositionMints.delete(mint);
+    }
+  }
+
+  private subscribeToPositionTrades(mint: string): void {
+    if (this.subscribedPositionMints.has(mint)) return;
+    this.subscribedPositionMints.add(mint);
+    this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
+  }
+
+  private unsubscribeFromPositionTrades(mint: string): void {
+    if (!this.subscribedPositionMints.has(mint)) return;
+    this.subscribedPositionMints.delete(mint);
+    this.ws?.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [mint] }));
   }
 
   private beginWatching(
@@ -139,7 +214,9 @@ export class AutoTrader {
     symbol: string,
     bondingCurveKey: string | null,
     creatorAddress: string | null,
-    creatorInitialBuySol: number
+    creatorInitialBuySol: number,
+    platform: "pumpfun" | "other" = "pumpfun",
+    poolHint: string | null = null
   ): void {
     // Garde-fou n°1 : si ce token est déjà observé ou déjà détenu, on ignore ce nouvel
     // événement de création plutôt que de créer un doublon (ex. si PumpPortal renvoie
@@ -152,7 +229,17 @@ export class AutoTrader {
     state.tokensScanned += 1;
     saveBotState(this.telegramId, state);
 
-    const watch = createTokenWatch(mint, name, symbol, bondingCurveKey, creatorAddress, creatorInitialBuySol, Date.now());
+    const watch = createTokenWatch(
+      mint,
+      name,
+      symbol,
+      bondingCurveKey,
+      creatorAddress,
+      creatorInitialBuySol,
+      Date.now(),
+      platform,
+      poolHint
+    );
     this.watches.set(mint, watch);
 
     const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
@@ -253,7 +340,10 @@ export class AutoTrader {
         return;
       }
 
-      if (watch.creatorInitialBuySol < this.params.minCreatorInitialBuySol) {
+      // Donnée non disponible pour un token découvert via migration (pas fournie par cet
+      // événement) — on ne peut pas évaluer ce filtre dans ce cas, donc on le laisse passer
+      // plutôt que de rejeter systématiquement faute d'information.
+      if (watch.creatorAddress && watch.creatorInitialBuySol < this.params.minCreatorInitialBuySol) {
         this.rejectWatch(
           mint,
           `achat initial du créateur trop faible (${watch.creatorInitialBuySol.toFixed(2)} SOL, min ${this.params.minCreatorInitialBuySol} SOL)`,
@@ -492,6 +582,7 @@ export class AutoTrader {
         openedAt: new Date().toISOString(),
       };
       saveOpenPosition(position);
+      this.subscribeToPositionTrades(mint);
 
       logTrade({
         telegramId: this.telegramId,
@@ -732,6 +823,7 @@ export class AutoTrader {
       if (position.remainingPercent <= 0) {
         closePosition(this.telegramId, position.mint);
         this.peakMarketCaps.delete(position.mint);
+        this.unsubscribeFromPositionTrades(position.mint);
 
         // Instantané du capital une fois la position entièrement liquidée (réalisé, pas d'estimation
         // sur une position encore ouverte) — sert à calculer un vrai drawdown, pas un rejeu approximatif.
