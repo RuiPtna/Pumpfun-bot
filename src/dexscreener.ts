@@ -4,6 +4,8 @@ export interface DexScreenerSnapshot {
   priceUsd: number;
   buys5m: number;
   sells5m: number;
+  name: string | null;
+  symbol: string | null;
 }
 
 /**
@@ -30,6 +32,8 @@ export async function fetchDexScreenerData(mint: string): Promise<DexScreenerSna
       priceUsd: parseFloat(pair.priceUsd ?? "0"),
       buys5m: pair.txns?.m5?.buys ?? 0,
       sells5m: pair.txns?.m5?.sells ?? 0,
+      name: typeof pair.baseToken?.name === "string" ? pair.baseToken.name : null,
+      symbol: typeof pair.baseToken?.symbol === "string" ? pair.baseToken.symbol : null,
     };
   } catch {
     return null; // réseau lent, rate limit, ou token pas encore indexé — on réessaiera au prochain cycle
