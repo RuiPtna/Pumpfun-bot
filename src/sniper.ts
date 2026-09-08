@@ -709,7 +709,7 @@ export class AutoTrader {
         effectiveStopLossPercent === 0 && this.params.stopLossPercent !== 0
           ? `🛡️ <b>Stop à l'équilibre</b> déclenché (${gainPercent.toFixed(1)}%)`
           : `🛑 <b>Stop-loss</b> déclenché (${gainPercent.toFixed(1)}%)`;
-      await this.exitPosition(position, 100, gainPercent, stopReason, true);
+      await this.exitPosition(position, position.remainingPercent, gainPercent, stopReason, true);
       return;
     }
 
@@ -757,7 +757,7 @@ export class AutoTrader {
       if (dropFromPeakPercent >= this.params.trailingStopPercent) {
         await this.exitPosition(
           position,
-          100,
+          position.remainingPercent,
           gainPercent,
           `📉 <b>Trailing stop</b> déclenché (-${dropFromPeakPercent.toFixed(1)}% depuis le plus haut)`,
           true
