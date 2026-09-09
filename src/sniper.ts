@@ -41,7 +41,7 @@ function pickExitFlavor(gainPercent: number): string {
   const pool = gainPercent >= 50 ? BIG_WIN_PHRASES : gainPercent >= 0 ? SMALL_WIN_PHRASES : LOSS_PHRASES;
   return pool[Math.floor(Math.random() * pool.length)];
 }
-const POSITION_POLL_INTERVAL_MS = 2_000; // vérification automatique des positions toutes les 2s (indépendant de tout bouton)
+const POSITION_POLL_INTERVAL_MS = 1_000; // resserré : le suivi des positions a son propre budget (Jupiter Price API, 600 req/min), jamais partagé avec le scan
 // Limite technique (indépendante des réglages métier) : au-delà, on arrête d'observer un token
 // qui ne s'est jamais décidé, pour libérer les ressources — voir le commentaire dans beginWatching.
 const WATCH_TECHNICAL_TIMEOUT_MINUTES = 15;
@@ -790,7 +790,7 @@ export class AutoTrader {
     // continue de s'effondrer transformerait une perte de -15% prévue en une perte de -90%
     // réelle. Le stop-loss retente donc presque immédiatement (3s), pas 30s.
     const failureCount = this.sellFailureCounts.get(position.mint) ?? 0;
-    const cooldownMs = isUrgent ? 3_000 : this.SELL_RETRY_COOLDOWN_MS;
+    const cooldownMs = isUrgent ? 1_500 : this.SELL_RETRY_COOLDOWN_MS;
     const lastFailure = this.recentSellFailures.get(position.mint);
     if (lastFailure && Date.now() - lastFailure < cooldownMs) {
       return;
