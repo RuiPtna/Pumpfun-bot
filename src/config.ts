@@ -76,10 +76,10 @@ export const defaultParams: StrategyParams = {
   positionPercent: 25,
   maxOpenPositions: 2,
 
-  minAgeMinutes: 10, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
+  minAgeMinutes: 7, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 4 min compte désormais
   minMarketCapUsd: 35000,
-  maxMarketCapUsd: 500000, // au-delà, trop tard dans le cycle du token, peu de potentiel de hausse restant
+  maxMarketCapUsd: 900000, // au-delà, trop tard dans le cycle du token, peu de potentiel de hausse restant
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 20,
   minCreatorInitialBuySol: 0.2,
