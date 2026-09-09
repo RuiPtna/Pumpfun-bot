@@ -314,6 +314,8 @@ function formatConfig(telegramId: number): string {
     `Score minimum pour entrer : ${p.minEntryScore}/100`,
     `Concentration holders max : créateur ${p.maxCreatorHoldingPercent}%, plus gros holder ${p.maxTopHolderPercent}%, top 10 ${p.maxTop10HolderPercent}%`,
     `Achat initial créateur min : ${p.minCreatorInitialBuySol} SOL — Autorités révoquées exigées : ${p.requireRevokedAuthorities ? "🟢 oui" : "🔴 non"}`,
+    `Image/lien social exigé : ${p.requireTokenMetadata ? "🟢 oui" : "🔴 non"}`,
+    `Multi-plateformes (LetsBonk, etc.) : ${p.enableMultiPlatform ? "🟢 activé" : "🔴 désactivé"}`,
     `Progression bonding curve min : ${p.minBondingCurveProgressPercent}%`,
     "",
     "<b>📉 Sorties</b>",

@@ -17,6 +17,10 @@ export interface TokenWatch {
   lastLiquidityUsd: number;
   lastBuys5m: number;
   lastSells5m: number;
+  /** Image de profil présente (rempli dès la première lecture DexScreener) */
+  hasImage: boolean | null;
+  /** Au moins un lien social/site web renseigné */
+  hasSocialPresence: boolean | null;
   lastRealSolReserves: number;
   lastBondingCurveProgressPercent: number;
   qualityChecked: boolean;
@@ -48,6 +52,8 @@ export function createTokenWatch(
     realSolHistory: [],
     lastLiquidityUsd: 0,
     lastBuys5m: 0,
+    hasImage: null,
+    hasSocialPresence: null,
     lastSells5m: 0,
     lastRealSolReserves: 0,
     lastBondingCurveProgressPercent: 0,

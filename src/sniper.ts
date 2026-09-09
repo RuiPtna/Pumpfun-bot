@@ -44,7 +44,7 @@ function pickExitFlavor(gainPercent: number): string {
 const POSITION_POLL_INTERVAL_MS = 1_000; // resserré : le suivi des positions a son propre budget (Jupiter Price API, 600 req/min), jamais partagé avec le scan
 // Limite technique (indépendante des réglages métier) : au-delà, on arrête d'observer un token
 // qui ne s'est jamais décidé, pour libérer les ressources — voir le commentaire dans beginWatching.
-const WATCH_TECHNICAL_TIMEOUT_MINUTES = 15;
+const WATCH_TECHNICAL_TIMEOUT_MINUTES = 27; // laisse ~15 min de marge d'évaluation après le minAgeMinutes actuel (12 min)
 
 interface MarketCapReading {
   marketCapUsd: number;
@@ -343,6 +343,8 @@ export class AutoTrader {
         // on le complète dès qu'on a une réponse DexScreener, qui l'inclut systématiquement.
         if (dex.name && watch.name === "?") watch.name = dex.name;
         if (dex.symbol && watch.symbol === "?") watch.symbol = dex.symbol;
+        watch.hasImage = dex.hasImage;
+        watch.hasSocialPresence = dex.hasSocialPresence;
       }
     }
 
@@ -390,6 +392,17 @@ export class AutoTrader {
         const authorities = await rpcLimiter.run(() => checkMintAuthorities(this.connection, mint));
         if (authorities && (!authorities.mintAuthorityRevoked || !authorities.freezeAuthorityRevoked)) {
           this.rejectWatch(mint, "autorité de mint ou de freeze non révoquée (risque honeypot)", 0);
+          return;
+        }
+      }
+
+      // Aucune image ET aucun lien social/site — signal fort de lancement bâclé/produit en masse,
+      // documenté comme un vrai indicateur de risque dans plusieurs guides anti-rug. On ne peut
+      // évaluer ce filtre que si une lecture DexScreener a déjà eu lieu (watch.hasImage non nul) ;
+      // sinon on laisse passer plutôt que de rejeter sur une donnée pas encore disponible.
+      if (this.params.requireTokenMetadata && watch.hasImage !== null && watch.hasSocialPresence !== null) {
+        if (!watch.hasImage && !watch.hasSocialPresence) {
+          this.rejectWatch(mint, "aucune image ni lien social/site — lancement probablement bâclé", 0);
           return;
         }
       }

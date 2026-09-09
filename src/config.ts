@@ -26,6 +26,8 @@ export interface StrategyParams {
   minBondingCurveProgressPercent: number;
   /** Rejette les tokens dont l'autorité de mint ou de freeze n'est pas révoquée (protection anti-honeypot) */
   requireRevokedAuthorities: boolean;
+  /** Rejette les tokens sans image ET sans aucun lien social/site web (signal de lancement bâclé) */
+  requireTokenMetadata: boolean;
   /** Active la détection sur d'autres plateformes (LetsBonk, etc.) via un flux tiers moins établi que PumpPortal — désactivé par défaut, à activer volontairement après tests en paper */
   enableMultiPlatform: boolean;
   /** % max détenu par le plus gros holder avant d'acheter (rejette si dépassé) */
@@ -76,8 +78,8 @@ export const defaultParams: StrategyParams = {
   positionPercent: 25,
   maxOpenPositions: 2,
 
-  minAgeMinutes: 7, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
-  maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 7 min compte désormais
+  minAgeMinutes: 12, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
+  maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 12 min compte désormais
   minMarketCapUsd: 35000,
   maxMarketCapUsd: 2000000, // relevé : les tokens déjà bien établis ont prouvé leur résistance, moins de rugs à ce stade
   minRealSolInvested: 1,
@@ -85,6 +87,7 @@ export const defaultParams: StrategyParams = {
   minCreatorInitialBuySol: 0.2,
   minBondingCurveProgressPercent: 10,
   requireRevokedAuthorities: true,
+  requireTokenMetadata: true,
   enableMultiPlatform: false,
   maxTopHolderPercent: 40,
   maxTop10HolderPercent: 75,
@@ -162,5 +165,6 @@ export const booleanParamKeys: (keyof StrategyParams)[] = [
   "liveTrading",
   "pauseFeatureEnabled",
   "requireRevokedAuthorities",
+  "requireTokenMetadata",
   "enableMultiPlatform",
 ];

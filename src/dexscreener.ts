@@ -6,6 +6,10 @@ export interface DexScreenerSnapshot {
   sells5m: number;
   name: string | null;
   symbol: string | null;
+  /** Image de profil présente sur le token (absence = signal de lancement bâclé/produit en masse) */
+  hasImage: boolean;
+  /** Au moins un lien social ou site web renseigné (Twitter, Telegram, site...) */
+  hasSocialPresence: boolean;
 }
 
 /**
@@ -34,6 +38,8 @@ export async function fetchDexScreenerData(mint: string): Promise<DexScreenerSna
       sells5m: pair.txns?.m5?.sells ?? 0,
       name: typeof pair.baseToken?.name === "string" ? pair.baseToken.name : null,
       symbol: typeof pair.baseToken?.symbol === "string" ? pair.baseToken.symbol : null,
+      hasImage: typeof pair.info?.imageUrl === "string" && pair.info.imageUrl.length > 0,
+      hasSocialPresence: (pair.info?.socials?.length ?? 0) > 0 || (pair.info?.websites?.length ?? 0) > 0,
     };
   } catch {
     return null; // réseau lent, rate limit, ou token pas encore indexé — on réessaiera au prochain cycle
