@@ -571,7 +571,7 @@ export class AutoTrader {
           buyFallbackNote = "\nℹ️ Acheté via Jupiter (PumpPortal n'a pas pu traiter ce token, probablement gradué)";
         }
       } else {
-        simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd);
+        simulateBuy(this.telegramId, mint, positionSizeUsd, marketCapUsd, this.params.priorityFeeSol * solPriceUsd);
         signature = `PAPER-${Date.now()}`;
       }
 
@@ -823,7 +823,8 @@ export class AutoTrader {
         }
       } else {
         const usdReceived = position.positionSizeUsd * (sellPercent / 100) * (1 + gainPercent / 100);
-        simulateSell(this.telegramId, position.mint, usdReceived);
+        const solPriceUsd = await getSolPriceUsd();
+        simulateSell(this.telegramId, position.mint, usdReceived, this.params.priorityFeeSol * solPriceUsd);
         signature = `PAPER-${Date.now()}`;
       }
 
@@ -926,7 +927,8 @@ export async function manualSellPosition(
         ? ((position.lastKnownMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100
         : 0;
     const usdReceived = position.positionSizeUsd * (position.remainingPercent / 100) * (1 + gainPercent / 100);
-    simulateSell(telegramId, mint, usdReceived);
+    const solPriceUsd = await getSolPriceUsd();
+    simulateSell(telegramId, mint, usdReceived, params.priorityFeeSol * solPriceUsd);
     signature = `PAPER-${Date.now()}`;
   }
 
