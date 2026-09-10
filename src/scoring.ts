@@ -21,6 +21,8 @@ export interface TokenWatch {
   hasImage: boolean | null;
   /** Au moins un lien social/site web renseigné */
   hasSocialPresence: boolean | null;
+  /** Variation de prix sur les 5 dernières minutes (DexScreener) — détecte un "couteau qui tombe" */
+  lastPriceChange5mPercent: number | null;
   lastRealSolReserves: number;
   lastBondingCurveProgressPercent: number;
   qualityChecked: boolean;
@@ -54,6 +56,7 @@ export function createTokenWatch(
     lastBuys5m: 0,
     hasImage: null,
     hasSocialPresence: null,
+    lastPriceChange5mPercent: null,
     lastSells5m: 0,
     lastRealSolReserves: 0,
     lastBondingCurveProgressPercent: 0,
@@ -212,6 +215,21 @@ export function passesHardFilters(
   if (ageMinutes > params.maxAgeMinutes) return { ok: false, reason: "trop vieux" };
   if (currentMarketCapUsd < params.minMarketCapUsd) return { ok: false, reason: "market cap trop faible" };
   if (currentMarketCapUsd > params.maxMarketCapUsd) return { ok: false, reason: "market cap trop élevé" };
+
+  // "Couteau qui tombe" : un token peut avoir déjà pompé bien au-delà de la fourchette et être
+  // en train de s'effondrer À TRAVERS elle — son market cap semble alors "dans les clous" à
+  // l'instant T, alors qu'il est en pleine chute, pas en train d'émerger. On vérifie la
+  // tendance récente (5 min), rechargée à chaque cycle, pas seulement une fois à l'entrée.
+  if (
+    hasTradeCounts &&
+    watch.lastPriceChange5mPercent !== null &&
+    watch.lastPriceChange5mPercent <= params.maxRecent5mDropPercent
+  ) {
+    return {
+      ok: false,
+      reason: `chute récente trop forte (${watch.lastPriceChange5mPercent.toFixed(0)}% sur 5 min — probablement un couteau qui tombe)`,
+    };
+  }
 
   // Filtre anti-token-mort et filtre de progression : uniquement pertinents PENDANT la phase
   // bonding curve. Une fois le token gradué (hasTradeCounts=true, données DexScreener), ces

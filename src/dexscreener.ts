@@ -10,6 +10,9 @@ export interface DexScreenerSnapshot {
   hasImage: boolean;
   /** Au moins un lien social ou site web renseigné (Twitter, Telegram, site...) */
   hasSocialPresence: boolean;
+  /** Variation de prix sur les 5 dernières minutes — détecte un token en train de s'effondrer
+   * après un pic, même si son market cap reste dans la fourchette acceptable à l'instant T. */
+  priceChange5mPercent: number | null;
 }
 
 /**
@@ -40,6 +43,7 @@ export async function fetchDexScreenerData(mint: string): Promise<DexScreenerSna
       symbol: typeof pair.baseToken?.symbol === "string" ? pair.baseToken.symbol : null,
       hasImage: typeof pair.info?.imageUrl === "string" && pair.info.imageUrl.length > 0,
       hasSocialPresence: (pair.info?.socials?.length ?? 0) > 0 || (pair.info?.websites?.length ?? 0) > 0,
+      priceChange5mPercent: typeof pair.priceChange?.m5 === "number" ? pair.priceChange.m5 : null,
     };
   } catch {
     return null; // réseau lent, rate limit, ou token pas encore indexé — on réessaiera au prochain cycle

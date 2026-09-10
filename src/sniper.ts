@@ -345,6 +345,7 @@ export class AutoTrader {
         if (dex.symbol && watch.symbol === "?") watch.symbol = dex.symbol;
         watch.hasImage = dex.hasImage;
         watch.hasSocialPresence = dex.hasSocialPresence;
+        watch.lastPriceChange5mPercent = dex.priceChange5mPercent;
       }
     }
 
@@ -817,7 +818,7 @@ export class AutoTrader {
     // continue de s'effondrer transformerait une perte de -15% prévue en une perte de -90%
     // réelle. Le stop-loss retente donc presque immédiatement (3s), pas 30s.
     const failureCount = this.sellFailureCounts.get(position.mint) ?? 0;
-    const cooldownMs = isUrgent ? 1_500 : this.SELL_RETRY_COOLDOWN_MS;
+    const cooldownMs = isUrgent ? 1_000 : this.SELL_RETRY_COOLDOWN_MS;
     const lastFailure = this.recentSellFailures.get(position.mint);
     if (lastFailure && Date.now() - lastFailure < cooldownMs) {
       return;
@@ -828,7 +829,7 @@ export class AutoTrader {
     // initiale ne le permet ; mieux vaut sortir à un prix un peu pire que rester coincé à
     // attendre indéfiniment pendant que la position continue de s'effondrer.
     const effectiveSlippage = isUrgent
-      ? Math.min(this.params.maxSlippagePercent + failureCount * 8, 40)
+      ? Math.min(this.params.maxSlippagePercent + failureCount * 12, 60)
       : this.params.maxSlippagePercent;
 
     try {

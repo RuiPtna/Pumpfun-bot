@@ -28,6 +28,10 @@ export interface StrategyParams {
   requireRevokedAuthorities: boolean;
   /** Rejette les tokens sans image ET sans aucun lien social/site web (signal de lancement bâclé) */
   requireTokenMetadata: boolean;
+  /** Rejette un token dont le prix a chuté de plus que ce seuil sur les 5 dernières minutes —
+   * détecte un "couteau qui tombe" (pic suivi d'un effondrement), même si son market cap reste
+   * dans la fourchette acceptable à l'instant T. Valeur négative, ex. -15. */
+  maxRecent5mDropPercent: number;
   /** Active la détection sur d'autres plateformes (LetsBonk, etc.) via un flux tiers moins établi que PumpPortal — désactivé par défaut, à activer volontairement après tests en paper */
   enableMultiPlatform: boolean;
   /** % max détenu par le plus gros holder avant d'acheter (rejette si dépassé) */
@@ -88,6 +92,7 @@ export const defaultParams: StrategyParams = {
   minBondingCurveProgressPercent: 10,
   requireRevokedAuthorities: true,
   requireTokenMetadata: true,
+  maxRecent5mDropPercent: -15,
   enableMultiPlatform: false,
   maxTopHolderPercent: 40,
   maxTop10HolderPercent: 75,
@@ -114,7 +119,7 @@ export const defaultParams: StrategyParams = {
   minScoreAfterPause: 80,
   pauseFeatureEnabled: false,
 
-  maxSlippagePercent: 15,
+  maxSlippagePercent: 25,
   priorityFeeSol: 0.0005,
   reserveSolBalance: 0.05,
 
@@ -156,6 +161,7 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "pauseDurationMinutes",
   "minScoreAfterPause",
   "maxSlippagePercent",
+  "maxRecent5mDropPercent",
   "priorityFeeSol",
   "reserveSolBalance",
 ];
