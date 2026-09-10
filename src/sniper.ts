@@ -558,6 +558,20 @@ export class AutoTrader {
     const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
     saveBotState(this.telegramId, state);
 
+    // Dernière vérification juste avant l'achat : les vérifications qualité qui précèdent
+    // (créateur, autorités, concentration...) prennent du temps sur un token volatile — le prix
+    // a pu sortir de la fourchette acceptable entre la décision initiale et maintenant. Mieux
+    // vaut annuler que d'acheter un token déjà en train de dumper sous le seuil minimum.
+    const lastCheckReading = await this.readMarketCap(mint, bondingCurveKey, "position");
+    if (!lastCheckReading || lastCheckReading.marketCapUsd < this.params.minMarketCapUsd || lastCheckReading.marketCapUsd > this.params.maxMarketCapUsd) {
+      this.rejectWatch(
+        mint,
+        `market cap sorti de la fourchette juste avant l'achat (${lastCheckReading ? "$" + lastCheckReading.marketCapUsd.toFixed(0) : "indisponible"})`,
+        score
+      );
+      return;
+    }
+
     try {
       let signature: string;
       let buyFallbackNote = "";
