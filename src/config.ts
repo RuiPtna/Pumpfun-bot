@@ -100,16 +100,16 @@ export const defaultParams: StrategyParams = {
   minEntryScore: 45,
 
   stopLossPercent: -15,
-  tp1Percent: 30,
-  tp1SellPercent: 90, // vend 90% à +30% = récupère 117% du capital investi, profit déjà garanti
+  tp1Percent: 40,
+  tp1SellPercent: 100, // sortie unique et complète à +40% — plus simple, rien ne reste à gérer ensuite
   tp2Percent: 60,
-  tp2SellPercent: 0, // palier désactivé — stratégie simplifiée à un seul TP + un reliquat qui court
+  tp2SellPercent: 0, // palier désactivé — rien ne reste après TP1
   tp3Percent: 120,
   tp3SellPercent: 0,
   tp4Percent: 250,
   tp4SellPercent: 0,
   tp5Percent: 500,
-  tp5SellPercent: 100, // filet de sécurité : vend le reliquat (≈10%) ici si le trailing stop ne s'est pas encore déclenché
+  tp5SellPercent: 0,
   trailingStopPercent: 15,
   maxHoldMinutes: 45,
 
