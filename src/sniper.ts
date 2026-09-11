@@ -24,6 +24,7 @@ import {
   getBotState,
   saveBotState,
   isBlacklistedCreator,
+  getTrackedWallets,
   OpenPosition,
 } from "./db";
 
@@ -103,6 +104,12 @@ export class AutoTrader {
       // curve pump.fun) EN PLUS des tokens déjà gradués — donc les deux flux à la fois.
       this.ws?.send(JSON.stringify({ method: "subscribeNewToken" }));
       this.ws?.send(JSON.stringify({ method: "subscribeMigration" }));
+      // Wallets suivis pour le copy-trading — achat direct dès qu'ils achètent, sans repasser
+      // par nos filtres habituels (choix assumé : vitesse avant tout sur ce chemin-là).
+      const trackedAddresses = getTrackedWallets(this.telegramId).map((w) => w.address);
+      if (trackedAddresses.length > 0) {
+        this.ws?.send(JSON.stringify({ method: "subscribeAccountTrade", keys: trackedAddresses }));
+      }
       // Réabonnement aux positions déjà ouvertes (ex. après une reconnexion ou un redémarrage) —
       // sans ça, ces positions perdraient le suivi temps réel et retomberaient sur le seul
       // sondage périodique jusqu'à leur prochaine ouverture/fermeture.
@@ -160,6 +167,17 @@ export class AutoTrader {
       data = JSON.parse(raw);
     } catch {
       return;
+    }
+
+    // Copy-trading : un wallet suivi vient d'acheter un token — achat direct immédiat, sans
+    // passer par nos filtres habituels (vitesse avant tout sur ce chemin-là, choix assumé).
+    if (data.txType === "buy" && data.mint && typeof data.traderPublicKey === "string") {
+      const tracked = getTrackedWallets(this.telegramId);
+      const match = tracked.find((w) => w.address === data.traderPublicKey);
+      if (match) {
+        this.directCopyBuy(data.mint, data.name ?? "?", data.symbol ?? "?", match.label).catch(() => {});
+        return;
+      }
     }
 
     // Signal de réveil temps réel pour une position déjà ouverte — vérifié en priorité, avant
@@ -223,6 +241,16 @@ export class AutoTrader {
     } finally {
       this.checkingPositionMints.delete(mint);
     }
+  }
+
+  /** Abonne/désabonne un wallet suivi à chaud — appelé quand l'utilisateur ajoute/retire un
+   * wallet via /trackwallet ou /untrackwallet, sans avoir besoin de redémarrer le bot. */
+  subscribeWallet(address: string): void {
+    this.ws?.send(JSON.stringify({ method: "subscribeAccountTrade", keys: [address] }));
+  }
+
+  unsubscribeWallet(address: string): void {
+    this.ws?.send(JSON.stringify({ method: "unsubscribeAccountTrade", keys: [address] }));
   }
 
   private subscribeToPositionTrades(mint: string): void {
@@ -460,6 +488,97 @@ export class AutoTrader {
     logRejectedToken({ telegramId: this.telegramId, mint, reason, score, timestamp: new Date().toISOString() });
 
     this.watches.delete(mint);
+  }
+
+  /**
+   * Achat direct pour le copy-trading — un wallet suivi vient d'acheter ce token. Aucun des
+   * filtres habituels (créateur, autorités, market cap, score...) ne s'applique ici : le
+   * choix assumé est de privilégier la vitesse pure et faire confiance au wallet suivi.
+   * Seuls les garde-fous de base restent (pas de doublon, slot disponible, solde suffisant).
+   */
+  private async directCopyBuy(mint: string, name: string, symbol: string, walletLabel: string): Promise<void> {
+    if (getOpenPositions(this.telegramId).some((p) => p.mint === mint)) return; // déjà détenu
+
+    const openPositions = getOpenPositions(this.telegramId);
+    if (openPositions.length >= this.params.maxOpenPositions) return; // pas de slot libre
+
+    const solPriceUsd = await getSolPriceUsd();
+    const state = getBotState(this.telegramId, this.params.startingCapitalUsd);
+    const currentCapitalUsd = this.params.liveTrading
+      ? await this.getRealCapitalUsd(solPriceUsd)
+      : state.paperCapitalUsd;
+    const positionSizeUsd = currentCapitalUsd * (this.params.positionPercent / 100);
+    const positionSizeSol = positionSizeUsd / solPriceUsd;
+
+    try {
+      let signature: string;
+      let buyFallbackNote = "";
+
+      if (this.params.liveTrading) {
+        const balanceLamports = await rpcLimiter.run(() => this.connection.getBalance(this.signer.publicKey));
+        const balanceSol = balanceLamports / 1_000_000_000;
+        if (balanceSol - positionSizeSol - this.params.priorityFeeSol - 0.001 < this.params.reserveSolBalance) return;
+
+        const result = await buyWithFallback(
+          this.connection,
+          this.signer,
+          mint,
+          positionSizeSol,
+          this.params.maxSlippagePercent,
+          this.params.priorityFeeSol
+        );
+        signature = result.signature;
+        if (result.usedFallback) buyFallbackNote = "\nℹ️ Acheté via Jupiter (repli)";
+
+        const balance = await rpcLimiter.run(() => getRawTokenBalance(this.connection, this.signer.publicKey, mint));
+        if (!balance || balance.amountRaw === "0") {
+          this.notify(`❌ Copy-achat sur <b>${escapeHtml(symbol)}</b> confirmé mais aucun token reçu — position NON enregistrée.`);
+          return;
+        }
+      } else {
+        simulateBuy(this.telegramId, mint, positionSizeUsd, 1, this.params.priorityFeeSol * solPriceUsd);
+        signature = `PAPER-${Date.now()}`;
+      }
+
+      const freshReading = await this.readMarketCap(mint, null, "position");
+      const entryMarketCapUsd = freshReading?.marketCapUsd ?? 1;
+      const entryPriceUsd = await getJupiterPriceUsd(mint);
+
+      const position: OpenPosition = {
+        telegramId: this.telegramId,
+        mint,
+        name,
+        symbol,
+        bondingCurveKey: null,
+        creatorAddress: null,
+        entryMarketCapUsd,
+        entryPriceUsd,
+        lastKnownMarketCapUsd: entryMarketCapUsd,
+        lastUpdatedAt: new Date().toISOString(),
+        positionSizeUsd,
+        remainingPercent: 100,
+        takeProfitLevelsHit: [],
+        openedAt: new Date().toISOString(),
+      };
+      saveOpenPosition(position);
+      this.subscribeToPositionTrades(mint);
+
+      logTrade({
+        telegramId: this.telegramId,
+        action: "buy",
+        mint,
+        amountSol: this.params.liveTrading ? positionSizeSol : 0,
+        signature,
+        timestamp: new Date().toISOString(),
+      });
+
+      const modeTag = this.params.liveTrading ? "🔴 LIVE" : "📝 PAPER";
+      this.notify(
+        `🐋 Copy-achat (${escapeHtml(walletLabel)}) — ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>${buyFallbackNote}`
+      );
+    } catch (err) {
+      this.notify(`❌ Échec du copy-achat sur ${escapeHtml(symbol)} (wallet ${escapeHtml(walletLabel)}) : ${escapeHtml((err as Error).message)}`);
+    }
   }
 
   private async tryEnter(

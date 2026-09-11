@@ -9,6 +9,9 @@ import {
   getTrades,
   getOpenPositions,
   closePosition,
+  getTrackedWallets,
+  addTrackedWallet,
+  removeTrackedWallet,
   getRejectedTokens,
   getAllRejectedTokens,
   getClosedTrades,
@@ -142,6 +145,9 @@ bot.command("help", (ctx) => {
       "/resume — lever une pause en cours immédiatement",
       "/set [clé] [valeur] — modifier un paramètre",
       "/live on|off — activer/désactiver le trading RÉEL (danger)",
+      "/trackwallet [adresse] [nom] — suivre un wallet en copy-trading (achat direct sans filtre)",
+      "/untrackwallet [adresse] — arrêter de suivre un wallet",
+      "/trackedwallets — liste des wallets suivis",
       "/menu — réafficher les boutons du menu principal",
     ].join("\n")
   );
@@ -460,6 +466,51 @@ function formatOpenPositions(telegramId: number): string {
   );
   return lines.join("\n\n");
 }
+
+bot.command("trackwallet", (ctx) => {
+  const [, address, ...labelParts] = ctx.message.text.split(" ").filter(Boolean);
+  if (!address) {
+    ctx.reply("Usage : /trackwallet [adresse_wallet] [nom optionnel]\n\nDès que ce wallet achète un token, le bot l'achète immédiatement aussi (copy-trading), sans passer par les filtres habituels.");
+    return;
+  }
+  try {
+    new PublicKey(address);
+  } catch {
+    ctx.reply("Adresse Solana invalide.");
+    return;
+  }
+  const label = labelParts.length > 0 ? labelParts.join(" ") : address.slice(0, 6);
+  addTrackedWallet(ctx.from.id, address, label);
+  const trader = autoTraderByUser.get(ctx.from.id);
+  if (trader) trader.subscribeWallet(address);
+  ctx.reply(`✅ Wallet "${label}" (${address.slice(0, 6)}...) suivi pour le copy-trading.`);
+});
+
+bot.command("untrackwallet", (ctx) => {
+  const [, address] = ctx.message.text.split(" ").filter(Boolean);
+  if (!address) {
+    ctx.reply("Usage : /untrackwallet [adresse_wallet]");
+    return;
+  }
+  const removed = removeTrackedWallet(ctx.from.id, address);
+  if (removed) {
+    const trader = autoTraderByUser.get(ctx.from.id);
+    if (trader) trader.unsubscribeWallet(address);
+    ctx.reply("✅ Wallet retiré du suivi.");
+  } else {
+    ctx.reply("Ce wallet n'était pas suivi.");
+  }
+});
+
+bot.command("trackedwallets", (ctx) => {
+  const wallets = getTrackedWallets(ctx.from.id);
+  if (wallets.length === 0) {
+    ctx.reply("Aucun wallet suivi pour l'instant. /trackwallet [adresse] [nom] pour en ajouter un.");
+    return;
+  }
+  const lines = wallets.map((w) => `🐋 ${w.label} — <code>${w.address}</code>`);
+  ctx.reply(["Wallets suivis (copy-trading) :", "", ...lines].join("\n"), { parse_mode: "HTML" });
+});
 
 bot.command("forgetposition", (ctx) => {
   const [, mint] = ctx.message.text.split(" ").filter(Boolean);
@@ -1024,6 +1075,9 @@ async function startBot(): Promise<void> {
     { command: "pausefeature", description: "Pause après pertes consécutives" },
     { command: "resume", description: "Lever une pause en cours" },
     { command: "resetpaper", description: "Réinitialiser le paper trading" },
+    { command: "trackwallet", description: "Suivre un wallet pour le copy-trading" },
+    { command: "untrackwallet", description: "Arrêter de suivre un wallet" },
+    { command: "trackedwallets", description: "Liste des wallets suivis" },
   ]);
   console.log("Menu de commandes Telegram configuré.");
 

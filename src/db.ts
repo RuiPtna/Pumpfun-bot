@@ -105,6 +105,7 @@ interface DbSchema {
   closedTrades: ClosedTrade[];
   botStates: BotState[];
   userParams: UserParamsRecord[];
+  trackedWallets: { telegramId: number; address: string; label: string }[];
 }
 
 const DB_PATH = path.join(__dirname, "..", "data", "db.json");
@@ -121,6 +122,7 @@ function ensureDb(): void {
       closedTrades: [],
       botStates: [],
       userParams: [],
+      trackedWallets: [],
     };
     fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
   }
@@ -135,6 +137,7 @@ function readDb(): DbSchema {
   if (!data.closedTrades) data.closedTrades = [];
   if (!data.botStates) data.botStates = [];
   if (!data.userParams) data.userParams = [];
+  if (!data.trackedWallets) data.trackedWallets = [];
   return data;
 }
 
@@ -295,4 +298,25 @@ export function saveUserParams(telegramId: number, params: StrategyParams): void
   if (idx >= 0) data.userParams[idx] = { telegramId, params };
   else data.userParams.push({ telegramId, params });
   writeDb(data);
+}
+
+export function getTrackedWallets(telegramId: number): { address: string; label: string }[] {
+  return readDb()
+    .trackedWallets.filter((w) => w.telegramId === telegramId)
+    .map((w) => ({ address: w.address, label: w.label }));
+}
+
+export function addTrackedWallet(telegramId: number, address: string, label: string): void {
+  const data = readDb();
+  if (data.trackedWallets.some((w) => w.telegramId === telegramId && w.address === address)) return;
+  data.trackedWallets.push({ telegramId, address, label });
+  writeDb(data);
+}
+
+export function removeTrackedWallet(telegramId: number, address: string): boolean {
+  const data = readDb();
+  const before = data.trackedWallets.length;
+  data.trackedWallets = data.trackedWallets.filter((w) => !(w.telegramId === telegramId && w.address === address));
+  writeDb(data);
+  return data.trackedWallets.length < before;
 }
