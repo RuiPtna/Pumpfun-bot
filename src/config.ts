@@ -88,16 +88,16 @@ export const defaultParams: StrategyParams = {
   maxMarketCapUsd: 8000000, // relevé encore : les tokens déjà bien établis ont prouvé leur résistance, moins de rugs à ce stade
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 20,
-  minCreatorInitialBuySol: 0.2,
+  minCreatorInitialBuySol: 0, // désactivé — trop de données manquantes selon la source de détection, bloquait sans raison
   minBondingCurveProgressPercent: 10,
-  requireRevokedAuthorities: true,
-  requireTokenMetadata: true,
-  maxRecent5mDropPercent: -15,
+  requireRevokedAuthorities: false, // désactivé — un filtre RPC de plus qui peut bloquer en silence, quasi toujours vrai de toute façon sur pump.fun
+  requireTokenMetadata: false, // désactivé — trop de "faux négatifs" (bons tokens sans image/lien renseigné)
+  maxRecent5mDropPercent: -30, // assoupli — ne bloque plus que les vraies chutes catastrophiques
   enableMultiPlatform: false,
   maxTopHolderPercent: 40,
   maxTop10HolderPercent: 75,
 
-  minEntryScore: 45,
+  minEntryScore: 30, // simplifié — les vrais garde-fous sont ailleurs (concentration holders, market cap, stop-loss)
 
   stopLossPercent: -10,
   tp1Percent: 30,
