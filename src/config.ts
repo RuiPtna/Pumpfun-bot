@@ -85,7 +85,7 @@ export const defaultParams: StrategyParams = {
   minAgeMinutes: 12, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 12 min compte désormais
   minMarketCapUsd: 35000,
-  maxMarketCapUsd: 2000000, // relevé : les tokens déjà bien établis ont prouvé leur résistance, moins de rugs à ce stade
+  maxMarketCapUsd: 8000000, // relevé encore : les tokens déjà bien établis ont prouvé leur résistance, moins de rugs à ce stade
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 20,
   minCreatorInitialBuySol: 0.2,
