@@ -99,10 +99,9 @@ export class AutoTrader {
     this.ws = new WebSocket(PUMPPORTAL_WS);
 
     this.ws.on("open", () => {
-      // Stratégie "tokens gradués" : on ne s'intéresse plus au tout début de vie d'un token
-      // (bonding curve pump.fun, la fenêtre la plus risquée), seulement au moment où il vient
-      // de graduer vers un vrai pool AMM (Raydium/PumpSwap) — déjà "prouvé" par sa graduation
-      // elle-même, évaluable via DexScreener, exécutable via PumpPortal/Jupiter.
+      // Stratégie mixte : on reprend aussi les tokens pré-migration (encore sur la bonding
+      // curve pump.fun) EN PLUS des tokens déjà gradués — donc les deux flux à la fois.
+      this.ws?.send(JSON.stringify({ method: "subscribeNewToken" }));
       this.ws?.send(JSON.stringify({ method: "subscribeMigration" }));
       // Réabonnement aux positions déjà ouvertes (ex. après une reconnexion ou un redémarrage) —
       // sans ça, ces positions perdraient le suivi temps réel et retomberaient sur le seul
@@ -170,8 +169,8 @@ export class AutoTrader {
       return;
     }
 
-    // Ancien chemin de détection (création pump.fun, pré-migration) — conservé mais inactif tant
-    // qu'on ne s'abonne qu'à subscribeMigration ; permet de revenir en arrière facilement si besoin.
+    // Détection pré-migration (création pump.fun, encore sur la bonding curve) — permet de
+    // capter des tokens à plus petit market cap, avant qu'ils n'aient éventuellement gradué.
     if (data.txType === "create" && data.mint) {
       this.beginWatching(
         data.mint,

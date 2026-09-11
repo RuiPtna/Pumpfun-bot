@@ -84,7 +84,7 @@ export const defaultParams: StrategyParams = {
 
   minAgeMinutes: 12, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 12 min compte désormais
-  minMarketCapUsd: 35000,
+  minMarketCapUsd: 20000, // abaissé pour reprendre aussi les tokens pré-migration (ex. ~25k) en plus des tokens gradués
   maxMarketCapUsd: 8000000, // relevé encore : les tokens déjà bien établis ont prouvé leur résistance, moins de rugs à ce stade
   minRealSolInvested: 1,
   maxCreatorHoldingPercent: 20,
@@ -99,8 +99,8 @@ export const defaultParams: StrategyParams = {
 
   minEntryScore: 45,
 
-  stopLossPercent: -15,
-  tp1Percent: 40,
+  stopLossPercent: -10,
+  tp1Percent: 30,
   tp1SellPercent: 100, // sortie unique et complète à +40% — plus simple, rien ne reste à gérer ensuite
   tp2Percent: 60,
   tp2SellPercent: 0, // palier désactivé — rien ne reste après TP1
