@@ -681,13 +681,12 @@ export class AutoTrader {
     // (créateur, autorités, concentration...) prennent du temps sur un token volatile — le prix
     // a pu sortir de la fourchette acceptable entre la décision initiale et maintenant. Mieux
     // vaut annuler que d'acheter un token déjà en train de dumper sous le seuil minimum.
+    // Si la relecture échoue (RPC lent, compte pas encore disponible), on ne bloque PAS l'achat
+    // pour autant — un échec technique ponctuel ne doit jamais se traduire par un refus
+    // systématique ; on se fie alors à la lecture précédente qui a mené à cette décision.
     const lastCheckReading = await this.readMarketCap(mint, bondingCurveKey, "position");
-    if (!lastCheckReading || lastCheckReading.marketCapUsd < this.params.minMarketCapUsd || lastCheckReading.marketCapUsd > this.params.maxMarketCapUsd) {
-      this.rejectWatch(
-        mint,
-        `market cap sorti de la fourchette juste avant l'achat (${lastCheckReading ? "$" + lastCheckReading.marketCapUsd.toFixed(0) : "indisponible"})`,
-        score
-      );
+    if (lastCheckReading && (lastCheckReading.marketCapUsd < this.params.minMarketCapUsd || lastCheckReading.marketCapUsd > this.params.maxMarketCapUsd)) {
+      this.rejectWatch(mint, `market cap sorti de la fourchette juste avant l'achat ($${lastCheckReading.marketCapUsd.toFixed(0)})`, score);
       return;
     }
 
@@ -836,6 +835,22 @@ export class AutoTrader {
       closePosition(this.telegramId, position.mint);
       this.peakMarketCaps.delete(position.mint);
       return;
+    }
+
+    // Garde-fou anti-lecture-aberrante : un saut de plus de 400% depuis la dernière lecture
+    // connue en un seul cycle est bien plus probablement une erreur de donnée (mauvaise paire
+    // DexScreener, glitch de prix) qu'un vrai mouvement de marché — sur un token réel, même une
+    // pompe extrême laisse une trace progressive dans mcHistory, pas un bond instantané x5+.
+    // On ignore cette lecture et on retente au cycle suivant plutôt que d'agir dessus (achat de
+    // TP fictif, alerte fausse) sur une donnée manifestement cassée.
+    if (position.lastKnownMarketCapUsd > 0) {
+      const jumpRatio = currentMarketCapUsd / position.lastKnownMarketCapUsd;
+      if (jumpRatio > 5 || jumpRatio < 0.2) {
+        this.notify(
+          `⚠️ Lecture de prix suspecte ignorée sur <b>${escapeHtml(position.symbol)}</b> (saut de ${(jumpRatio * 100).toFixed(0)}% d'un coup) — probablement une erreur de donnée, pas un vrai mouvement.`
+        );
+        return;
+      }
     }
 
     position.lastKnownMarketCapUsd = currentMarketCapUsd;
