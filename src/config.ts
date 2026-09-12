@@ -79,25 +79,25 @@ export interface StrategyParams {
 
 export const defaultParams: StrategyParams = {
   startingCapitalUsd: 20,
-  positionPercent: 25,
-  maxOpenPositions: 2,
+  positionPercent: 8, // plus petit pour tenir beaucoup de positions en même temps sans épuiser le capital
+  maxOpenPositions: 10, // stratégie "achat en masse" — beaucoup de petites positions, viser +30% sur chacune
 
-  minAgeMinutes: 12, // laisse passer le "dump de graduation" (ventes massives des premiers holders juste après migration) avant d'évaluer
+  minAgeMinutes: 0, // "on achète tout" — aucune attente
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 12 min compte désormais
-  minMarketCapUsd: 20000, // abaissé pour reprendre aussi les tokens pré-migration (ex. ~25k) en plus des tokens gradués
-  maxMarketCapUsd: 8000000, // relevé encore : les tokens déjà bien établis ont prouvé leur résistance, moins de rugs à ce stade
-  minRealSolInvested: 1,
-  maxCreatorHoldingPercent: 20,
-  minCreatorInitialBuySol: 0, // désactivé — trop de données manquantes selon la source de détection, bloquait sans raison
-  minBondingCurveProgressPercent: 10,
-  requireRevokedAuthorities: false, // désactivé — un filtre RPC de plus qui peut bloquer en silence, quasi toujours vrai de toute façon sur pump.fun
-  requireTokenMetadata: false, // désactivé — trop de "faux négatifs" (bons tokens sans image/lien renseigné)
-  maxRecent5mDropPercent: -30, // assoupli — ne bloque plus que les vraies chutes catastrophiques
-  enableMultiPlatform: false,
-  maxTopHolderPercent: 40,
-  maxTop10HolderPercent: 75,
+  minMarketCapUsd: 0, // "on achète tout" — aucun plancher
+  maxMarketCapUsd: 999999999999, // "on achète tout" — aucun plafond
+  minRealSolInvested: 0,
+  maxCreatorHoldingPercent: 100,
+  minCreatorInitialBuySol: 0,
+  minBondingCurveProgressPercent: 0,
+  requireRevokedAuthorities: false, // "on achète tout" — plus aucun filtre anti-rug, choix assumé
+  requireTokenMetadata: false,
+  maxRecent5mDropPercent: -100, // "on achète tout" — ne bloque jamais
+  enableMultiPlatform: true,
+  maxTopHolderPercent: 100,
+  maxTop10HolderPercent: 100,
 
-  minEntryScore: 30, // simplifié — les vrais garde-fous sont ailleurs (concentration holders, market cap, stop-loss)
+  minEntryScore: 0, // "on achète tout" — le score n'exclut plus rien
 
   stopLossPercent: -10,
   tp1Percent: 30,

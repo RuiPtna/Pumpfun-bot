@@ -399,10 +399,12 @@ export class AutoTrader {
     // au fil des cycles d'évaluation (sauf la concentration du créateur, qui reste vérifiée
     // ici en une passe — un compromis raisonnable plutôt que de la revérifier toutes les 20s).
     if (!watch.qualityChecked) {
-      if (watch.creatorAddress && isBlacklistedCreator(this.telegramId, watch.creatorAddress)) {
-        this.rejectWatch(mint, "créateur récidiviste (perte importante déjà subie avec ce créateur)", 0);
-        return;
-      }
+      // Désactivé : "on achète tout, point barre" — même le blocage anti-récidive (créateur qui
+      // a déjà causé une perte) ne s'applique plus, pour rester cohérent avec ce choix explicite.
+      // if (watch.creatorAddress && isBlacklistedCreator(this.telegramId, watch.creatorAddress)) {
+      //   this.rejectWatch(mint, "créateur récidiviste (perte importante déjà subie avec ce créateur)", 0);
+      //   return;
+      // }
 
       // Donnée non disponible pour un token découvert via migration (pas fournie par cet
       // événement) — on ne peut pas évaluer ce filtre dans ce cas, donc on le laisse passer
