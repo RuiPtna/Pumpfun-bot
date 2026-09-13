@@ -848,9 +848,9 @@ export class AutoTrader {
     if (position.lastKnownMarketCapUsd > 0) {
       const jumpRatio = currentMarketCapUsd / position.lastKnownMarketCapUsd;
       if (jumpRatio > 5 || jumpRatio < 0.2) {
-        this.notify(
-          `⚠️ Lecture de prix suspecte ignorée sur <b>${escapeHtml(position.symbol)}</b> (saut de ${(jumpRatio * 100).toFixed(0)}% d'un coup) — probablement une erreur de donnée, pas un vrai mouvement.`
-        );
+        // Silencieux : avec zéro filtre à l'achat, ça se déclenche très souvent sur des tokens
+        // à liquidité quasi nulle (prix erratique par nature) — plus la peine de spammer le chat
+        // à chaque fois, la protection reste active en interne (on ignore juste la lecture).
         return;
       }
     }
