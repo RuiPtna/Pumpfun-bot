@@ -747,8 +747,17 @@ export class AutoTrader {
       // (ce qui peut donner l'illusion d'une perte immédiate qui n'en est pas vraiment une).
       let entryMarketCapUsd = marketCapUsd;
       const freshReading = await this.readMarketCap(mint, bondingCurveKey, "position");
+      // On ne fait confiance à cette relecture que si elle reste cohérente avec ce qu'on
+      // suivait déjà pendant l'observation (watch.mcHistory) — un écart de plus de 3x d'un
+      // coup est bien plus probablement une mauvaise correspondance d'adresse (mauvais compte
+      // de bonding curve lu) qu'un vrai mouvement de prix ; mieux vaut garder la valeur de
+      // décision déjà établie que de partir sur une entrée potentiellement fausse, qui fausserait
+      // tout le suivi du stop-loss/TP ensuite.
       if (freshReading && freshReading.marketCapUsd > 0) {
-        entryMarketCapUsd = freshReading.marketCapUsd;
+        const ratio = freshReading.marketCapUsd / marketCapUsd;
+        if (ratio <= 3 && ratio >= 1 / 3) {
+          entryMarketCapUsd = freshReading.marketCapUsd;
+        }
       }
 
       // Prix de référence Jupiter, best-effort — permet des mises à jour plus fraîches ensuite
