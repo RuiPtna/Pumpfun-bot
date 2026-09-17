@@ -33,7 +33,7 @@ const WATCH_POLL_INTERVAL_MS = 8_000; // resserré : beaucoup moins de candidats
 
 const BIG_WIN_PHRASES = ["🎉 Ka-ching !", "🚀 On décolle !", "💰 Dans la poche !", "🔥 Joli coup !", "✨ Bien joué !"];
 const SMALL_WIN_PHRASES = ["✅ Petit gain sécurisé", "👍 Ça avance", "🙂 Dans le vert"];
-const LOSS_PHRASES = ["😬 Ça pique un peu", "🩹 On encaisse", "📉 Pas cette fois", "🫤 Raté"];
+const LOSS_PHRASES = ["😬 Ça pique un peu", "🩹 On encaisse le coup", "📉 Pas cette fois", "🫤 Raté"];
 
 const BUY_FLAVOR_PHRASES = ["🎯 Nouveau pari", "🔍 On y va", "🧭 Cap sur", "🌱 Nouvelle graine plantée"];
 
@@ -219,7 +219,11 @@ export class AutoTrader {
    * l'ancienne méthode (bonding curve / DexScreener) si Jupiter est indisponible.
    */
   private async readPositionMarketCapUsd(position: OpenPosition): Promise<number | null> {
-    if (position.entryPriceUsd && position.entryPriceUsd > 0) {
+    // Jupiter agrège de vrais pools AMM — fiable uniquement pour un token déjà gradué
+    // (bondingCurveKey null). Pour un token encore sur la bonding curve pump.fun, Jupiter n'a
+    // pas de mécanisme de prix adapté et peut renvoyer une valeur décorrélée de la vraie courbe
+    // — mieux vaut lire directement la bonding curve on-chain dans ce cas, toujours à jour.
+    if (!position.bondingCurveKey && position.entryPriceUsd && position.entryPriceUsd > 0) {
       const currentPrice = await getJupiterPriceUsd(position.mint);
       if (currentPrice !== null) {
         return position.entryMarketCapUsd * (currentPrice / position.entryPriceUsd);
@@ -839,22 +843,6 @@ export class AutoTrader {
       return;
     }
 
-    // Garde-fou anti-lecture-aberrante : un saut de plus de 400% depuis la dernière lecture
-    // connue en un seul cycle est bien plus probablement une erreur de donnée (mauvaise paire
-    // DexScreener, glitch de prix) qu'un vrai mouvement de marché — sur un token réel, même une
-    // pompe extrême laisse une trace progressive dans mcHistory, pas un bond instantané x5+.
-    // On ignore cette lecture et on retente au cycle suivant plutôt que d'agir dessus (achat de
-    // TP fictif, alerte fausse) sur une donnée manifestement cassée.
-    if (position.lastKnownMarketCapUsd > 0) {
-      const jumpRatio = currentMarketCapUsd / position.lastKnownMarketCapUsd;
-      if (jumpRatio > 5 || jumpRatio < 0.2) {
-        // Silencieux : avec zéro filtre à l'achat, ça se déclenche très souvent sur des tokens
-        // à liquidité quasi nulle (prix erratique par nature) — plus la peine de spammer le chat
-        // à chaque fois, la protection reste active en interne (on ignore juste la lecture).
-        return;
-      }
-    }
-
     position.lastKnownMarketCapUsd = currentMarketCapUsd;
     position.lastUpdatedAt = new Date().toISOString();
 
@@ -1138,9 +1126,11 @@ export async function refreshOpenPositionsPrices(telegramId: number, connection:
   for (const position of positions) {
     let marketCapUsd: number | null = null;
 
-    // Priorité à Jupiter (prix on-chain frais, sans délai de cache) si on a un prix de
-    // référence capturé à l'entrée — même logique que le suivi automatique des positions.
-    if (position.entryPriceUsd && position.entryPriceUsd > 0) {
+    // Priorité à Jupiter (prix on-chain frais, sans délai de cache) — mais uniquement pour un
+    // token déjà gradué (bondingCurveKey null) : Jupiter n'a pas de mécanisme de prix fiable
+    // pour un token encore sur la bonding curve pump.fun, la lecture directe on-chain est
+    // toujours plus fidèle dans ce cas.
+    if (!position.bondingCurveKey && position.entryPriceUsd && position.entryPriceUsd > 0) {
       const currentPrice = await getJupiterPriceUsd(position.mint);
       if (currentPrice !== null) {
         marketCapUsd = position.entryMarketCapUsd * (currentPrice / position.entryPriceUsd);
