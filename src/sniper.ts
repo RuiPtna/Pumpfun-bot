@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import { Connection, Keypair } from "@solana/web3.js";
 import { buyWithFallback } from "./buyWithFallback";
 import { connectMultiPlatformFeed } from "./multiPlatformFeed";
-import { getRawTokenBalance, getJupiterPriceUsd } from "./jupiter";
+import { getRawTokenBalance } from "./jupiter";
 import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
@@ -218,17 +218,13 @@ export class AutoTrader {
    * cap d'entrée, sans avoir besoin de connaître la supply exacte du token. Repli sur
    * l'ancienne méthode (bonding curve / DexScreener) si Jupiter est indisponible.
    */
+  /**
+   * Source unique de vérité pour le prix d'une position, une seule règle simple : bonding
+   * curve on-chain avant migration, DexScreener après — jamais les deux mélangés, jamais
+   * Jupiter (qui n'a pas de mécanisme fiable pour un token pas encore sur un vrai pool AMM,
+   * et a déjà causé des lectures totalement décorrélées sur des tokens gradués aussi).
+   */
   private async readPositionMarketCapUsd(position: OpenPosition): Promise<number | null> {
-    // Jupiter agrège de vrais pools AMM — fiable uniquement pour un token déjà gradué
-    // (bondingCurveKey null). Pour un token encore sur la bonding curve pump.fun, Jupiter n'a
-    // pas de mécanisme de prix adapté et peut renvoyer une valeur décorrélée de la vraie courbe
-    // — mieux vaut lire directement la bonding curve on-chain dans ce cas, toujours à jour.
-    if (!position.bondingCurveKey && position.entryPriceUsd && position.entryPriceUsd > 0) {
-      const currentPrice = await getJupiterPriceUsd(position.mint);
-      if (currentPrice !== null) {
-        return position.entryMarketCapUsd * (currentPrice / position.entryPriceUsd);
-      }
-    }
     const reading = await this.readMarketCap(position.mint, position.bondingCurveKey, "position");
     return reading ? reading.marketCapUsd : null;
   }
@@ -548,7 +544,6 @@ export class AutoTrader {
 
       const freshReading = await this.readMarketCap(mint, null, "position");
       const entryMarketCapUsd = freshReading?.marketCapUsd ?? 1;
-      const entryPriceUsd = await getJupiterPriceUsd(mint);
 
       const position: OpenPosition = {
         telegramId: this.telegramId,
@@ -558,7 +553,7 @@ export class AutoTrader {
         bondingCurveKey: null,
         creatorAddress: null,
         entryMarketCapUsd,
-        entryPriceUsd,
+        entryPriceUsd: null, // plus utilisé pour le suivi (source unique : bonding curve ou DexScreener selon la phase)
         lastKnownMarketCapUsd: entryMarketCapUsd,
         lastUpdatedAt: new Date().toISOString(),
         positionSizeUsd,
@@ -760,10 +755,6 @@ export class AutoTrader {
         }
       }
 
-      // Prix de référence Jupiter, best-effort — permet des mises à jour plus fraîches ensuite
-      // (voir readPositionPriceUsd). Si indisponible, on retombera simplement sur DexScreener.
-      const entryPriceUsd = await getJupiterPriceUsd(mint);
-
       const position: OpenPosition = {
         telegramId: this.telegramId,
         mint,
@@ -772,7 +763,7 @@ export class AutoTrader {
         bondingCurveKey,
         creatorAddress,
         entryMarketCapUsd,
-        entryPriceUsd,
+        entryPriceUsd: null, // plus utilisé pour le suivi (source unique : bonding curve ou DexScreener selon la phase)
         lastKnownMarketCapUsd: entryMarketCapUsd,
         lastUpdatedAt: new Date().toISOString(),
         positionSizeUsd,
@@ -833,7 +824,28 @@ export class AutoTrader {
       const positions = getOpenPositions(this.telegramId);
       for (const position of positions) {
         const marketCapUsd = await this.readPositionMarketCapUsd(position);
-        if (marketCapUsd === null) continue;
+        if (marketCapUsd === null) {
+          // Aucune lecture possible depuis un moment (compte introuvable, token mort, RPC en
+          // échec) — sans ça, la position resterait bloquée indéfiniment, puisque la sortie ne
+          // se déclenche normalement qu'après une lecture réussie. Passé un certain délai sans
+          // aucune donnée, on clôture de force sur la dernière valeur connue plutôt que de la
+          // laisser pendre éternellement.
+          const minutesSinceLastUpdate = (Date.now() - new Date(position.lastUpdatedAt).getTime()) / 60000;
+          if (minutesSinceLastUpdate >= 10) {
+            const gainPercent =
+              position.entryMarketCapUsd > 0
+                ? ((position.lastKnownMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100
+                : 0;
+            await this.exitPosition(
+              position,
+              position.remainingPercent,
+              gainPercent,
+              "🪦 <b>Position abandonnée</b> (aucune donnée de prix depuis 10+ min — token probablement mort)",
+              true
+            );
+          }
+          continue;
+        }
         await this.updatePositionAndCheckExit(position, marketCapUsd);
       }
     } finally {
@@ -1135,18 +1147,9 @@ export async function refreshOpenPositionsPrices(telegramId: number, connection:
   for (const position of positions) {
     let marketCapUsd: number | null = null;
 
-    // Priorité à Jupiter (prix on-chain frais, sans délai de cache) — mais uniquement pour un
-    // token déjà gradué (bondingCurveKey null) : Jupiter n'a pas de mécanisme de prix fiable
-    // pour un token encore sur la bonding curve pump.fun, la lecture directe on-chain est
-    // toujours plus fidèle dans ce cas.
-    if (!position.bondingCurveKey && position.entryPriceUsd && position.entryPriceUsd > 0) {
-      const currentPrice = await getJupiterPriceUsd(position.mint);
-      if (currentPrice !== null) {
-        marketCapUsd = position.entryMarketCapUsd * (currentPrice / position.entryPriceUsd);
-      }
-    }
-
-    if (marketCapUsd === null && position.bondingCurveKey) {
+    // Règle simple, une seule source par phase : bonding curve on-chain avant migration,
+    // DexScreener après — jamais Jupiter, jamais les deux mélangés (voir readPositionMarketCapUsd).
+    if (position.bondingCurveKey) {
       const onChain = await positionRpcLimiter.run(() =>
         fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
       );
