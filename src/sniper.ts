@@ -373,6 +373,7 @@ export class AutoTrader {
         watch.hasImage = dex.hasImage;
         watch.hasSocialPresence = dex.hasSocialPresence;
         watch.lastPriceChange5mPercent = dex.priceChange5mPercent;
+        watch.lastPairAgeMinutes = dex.pairAgeMinutes;
       }
     }
 
@@ -435,6 +436,16 @@ export class AutoTrader {
           this.rejectWatch(mint, "aucune image ni lien social/site — lancement probablement bâclé", 0);
           return;
         }
+      }
+
+      // Un produit déjà établi (action tokenisée, staking liquide...) peut apparaître dans le
+      // scan sans être un memecoin fraîchement lancé — sa paire de trading existe alors depuis
+      // longtemps, contrairement à un vrai token pump.fun tout juste créé ou gradué. Ces
+      // produits ont des dynamiques de prix totalement différentes de ce que la stratégie
+      // suppose, et ont déjà causé des lectures de gain complètement irréalistes.
+      if (watch.lastPairAgeMinutes !== null && watch.lastPairAgeMinutes > 1440) {
+        this.rejectWatch(mint, `paire de trading trop ancienne (${Math.round(watch.lastPairAgeMinutes / 1440)}j) — probablement pas un memecoin frais`, 0);
+        return;
       }
 
       if (watch.creatorAddress) {
@@ -862,6 +873,19 @@ export class AutoTrader {
       closePosition(this.telegramId, position.mint);
       this.peakMarketCaps.delete(position.mint);
       return;
+    }
+
+    // Garde-fou silencieux contre les lectures de données aberrantes : un saut de plus de 500%
+    // depuis la dernière lecture connue, en un seul cycle, est extrêmement improbable — dans les
+    // faits, chaque cas de ce genre observé cette session s'est révélé être un bug de donnée
+    // (mauvaise paire, produit établi mal filtré), jamais un vrai mouvement. On ignore cette
+    // lecture et on retente au cycle suivant, sans bloquer une vraie progression graduelle même
+    // si elle dépasse largement ce seuil sur la durée.
+    if (position.lastKnownMarketCapUsd > 0) {
+      const jumpRatio = currentMarketCapUsd / position.lastKnownMarketCapUsd;
+      if (jumpRatio > 6 || jumpRatio < 0.15) {
+        return;
+      }
     }
 
     position.lastKnownMarketCapUsd = currentMarketCapUsd;
