@@ -99,13 +99,17 @@ async function editOrReply(ctx: any, text: string, keyboard: ReturnType<typeof M
   }
 }
 
-function mainMenuKeyboard() {
+function mainMenuKeyboard(telegramId: number) {
+  const isRunning = autoTraderByUser.has(telegramId);
+  const toggleButton = isRunning
+    ? Markup.button.callback("🟢 Auto : ACTIF (toucher pour arrêter)", "menu_auto_off")
+    : Markup.button.callback("🔴 Auto : ARRÊTÉ (toucher pour démarrer)", "menu_auto_on");
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🟢 Auto ON", "menu_auto_on"), Markup.button.callback("🔴 Auto OFF", "menu_auto_off")],
+    [toggleButton],
     [Markup.button.callback("📊 PnL", "menu_pnl"), Markup.button.callback("📂 Positions", "menu_positions")],
     [Markup.button.callback("💰 Solde", "menu_balance"), Markup.button.callback("📈 Dashboard", "menu_dashboard")],
     [Markup.button.callback("🚫 Rejetés", "menu_rejected"), Markup.button.callback("📜 Historique", "menu_history")],
-    [Markup.button.callback("⚙️ Config", "menu_config"), Markup.button.callback("🧹 Reset Paper", "start_reset_paper")],
+    [Markup.button.callback("⚙️ Config", "menu_config"), Markup.button.callback("🧹 Réinitialiser", "start_reset_paper")],
   ]);
 }
 
@@ -127,7 +131,7 @@ bot.start((ctx) => {
       "",
       "Utilise les boutons ci-dessous pour l'usage courant. Tape /help pour la liste complète des commandes texte.",
     ].join("\n"),
-    mainMenuKeyboard()
+    mainMenuKeyboard(ctx.from!.id)
   );
 });
 
@@ -154,7 +158,7 @@ bot.command("help", (ctx) => {
 });
 
 bot.command("menu", (ctx) => {
-  ctx.reply("Menu principal :", mainMenuKeyboard());
+  ctx.reply("Menu principal :", mainMenuKeyboard(ctx.from.id));
 });
 
 bot.command("wallet", (ctx) => {
@@ -909,12 +913,12 @@ bot.action("start_reset_paper", async (ctx) => {
 bot.action("confirm_reset_paper", async (ctx) => {
   await ctx.answerCbQuery();
   const result = resetPaperData(ctx.from!.id);
-  await editOrReply(ctx, result, mainMenuKeyboard());
+  await editOrReply(ctx, result, mainMenuKeyboard(ctx.from!.id));
 });
 
 bot.action("cancel_reset_paper", async (ctx) => {
   await ctx.answerCbQuery();
-  await editOrReply(ctx, "Réinitialisation annulée.", mainMenuKeyboard());
+  await editOrReply(ctx, "Réinitialisation annulée.", mainMenuKeyboard(ctx.from!.id));
 });
 
 bot.command("dashboard", async (ctx) => {
@@ -1044,7 +1048,7 @@ bot.action("menu_chart", async (ctx) => {
 
 bot.action("menu_home", async (ctx) => {
   await ctx.answerCbQuery();
-  await editOrReply(ctx, "Menu principal :", mainMenuKeyboard());
+  await editOrReply(ctx, "Menu principal :", mainMenuKeyboard(ctx.from!.id));
 });
 bot.action("menu_rejected", async (ctx) => {
   await ctx.answerCbQuery();
@@ -1057,12 +1061,14 @@ bot.action("menu_config", async (ctx) => {
 bot.action("menu_auto_on", async (ctx) => {
   await ctx.answerCbQuery();
   const telegramId = ctx.from!.id;
-  ctx.reply(setAutotrade(telegramId, "on", (msg, extra) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML", ...extra }).catch(() => {})));
+  const result = setAutotrade(telegramId, "on", (msg, extra) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML", ...extra }).catch(() => {}));
+  await editOrReply(ctx, result, mainMenuKeyboard(telegramId));
 });
 bot.action("menu_auto_off", async (ctx) => {
   await ctx.answerCbQuery();
   const telegramId = ctx.from!.id;
-  ctx.reply(setAutotrade(telegramId, "off", (msg, extra) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML", ...extra }).catch(() => {})));
+  const result = setAutotrade(telegramId, "off", (msg, extra) => ctx.telegram.sendMessage(telegramId, msg, { parse_mode: "HTML", ...extra }).catch(() => {}));
+  await editOrReply(ctx, result, mainMenuKeyboard(telegramId));
 });
 
 // Capture le texte libre uniquement pour le flux guidé de retrait (adresse puis montant).

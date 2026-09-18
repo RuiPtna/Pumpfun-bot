@@ -1168,35 +1168,53 @@ export async function refreshOpenPositionsPrices(telegramId: number, connection:
   const positions = getOpenPositions(telegramId);
   const solPriceUsd = await getSolPriceUsd();
 
-  // En parallèle plutôt qu'une par une — avec plusieurs positions ouvertes, un rafraîchissement
-  // séquentiel peut prendre plusieurs secondes pour rien, chaque lecture étant indépendante.
-  const results = await Promise.all(
-    positions.map(async (position) => {
-      let marketCapUsd: number | null = null;
+  const readOne = async (position: OpenPosition): Promise<boolean> => {
+    let marketCapUsd: number | null = null;
 
-      // Règle simple, une seule source par phase : bonding curve on-chain avant migration,
-      // DexScreener après — jamais Jupiter, jamais les deux mélangés (voir readPositionMarketCapUsd).
-      if (position.bondingCurveKey) {
-        const onChain = await positionRpcLimiter.run(() =>
-          fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
-        );
-        if (onChain && !onChain.complete) marketCapUsd = onChain.marketCapUsd;
-      }
+    // Règle simple, une seule source par phase : bonding curve on-chain avant migration,
+    // DexScreener après — jamais Jupiter, jamais les deux mélangés (voir readPositionMarketCapUsd).
+    if (position.bondingCurveKey) {
+      const onChain = await positionRpcLimiter.run(() =>
+        fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
+      );
+      if (onChain && !onChain.complete) marketCapUsd = onChain.marketCapUsd;
+    }
 
-      if (marketCapUsd === null) {
-        const dex = await fetchDexScreenerData(position.mint);
-        if (dex && dex.marketCapUsd > 0) marketCapUsd = dex.marketCapUsd;
-      }
+    if (marketCapUsd === null) {
+      const dex = await fetchDexScreenerData(position.mint);
+      if (dex && dex.marketCapUsd > 0) marketCapUsd = dex.marketCapUsd;
+    }
 
-      if (marketCapUsd !== null) {
-        position.lastKnownMarketCapUsd = marketCapUsd;
-        position.lastUpdatedAt = new Date().toISOString();
-        saveOpenPosition(position);
-        return true;
-      }
-      return false;
-    })
-  );
+    if (marketCapUsd !== null) {
+      position.lastKnownMarketCapUsd = marketCapUsd;
+      position.lastUpdatedAt = new Date().toISOString();
+      saveOpenPosition(position);
+      return true;
+    }
+    return false;
+  };
 
-  return { updated: results.filter(Boolean).length, total: positions.length };
+  // Par petits groupes plutôt que tout d'un coup — envoyer 10 requêtes simultanées vers
+  // DexScreener peut déclencher une limite de débit qui n'apparaît jamais en séquentiel.
+  const BATCH_SIZE = 3;
+  const succeeded = new Set<string>();
+  for (let i = 0; i < positions.length; i += BATCH_SIZE) {
+    const batch = positions.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(batch.map((p) => readOne(p).then((ok) => ({ mint: p.mint, ok }))));
+    results.forEach((r) => r.ok && succeeded.add(r.mint));
+  }
+
+  // Deuxième passage pour celles qui ont échoué — une limite de débit ponctuelle se résout
+  // généralement d'elle-même après une courte pause, pas la peine d'abandonner tout de suite.
+  const failed = positions.filter((p) => !succeeded.has(p.mint));
+  if (failed.length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    for (let i = 0; i < failed.length; i += BATCH_SIZE) {
+      const batch = failed.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(batch.map((p) => readOne(p).then((ok) => ({ mint: p.mint, ok }))));
+      results.forEach((r) => r.ok && succeeded.add(r.mint));
+    }
+  }
+
+  return { updated: succeeded.size, total: positions.length };
 }
