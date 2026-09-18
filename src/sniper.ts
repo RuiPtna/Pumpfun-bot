@@ -1164,31 +1164,39 @@ export async function manualSellPosition(
  * pour garantir une valeur vraiment à jour au moment où l'utilisateur la demande, plutôt que
  * d'attendre le prochain passage du cycle automatique.
  */
-export async function refreshOpenPositionsPrices(telegramId: number, connection: Connection): Promise<void> {
+export async function refreshOpenPositionsPrices(telegramId: number, connection: Connection): Promise<{ updated: number; total: number }> {
   const positions = getOpenPositions(telegramId);
   const solPriceUsd = await getSolPriceUsd();
 
-  for (const position of positions) {
-    let marketCapUsd: number | null = null;
+  // En parallèle plutôt qu'une par une — avec plusieurs positions ouvertes, un rafraîchissement
+  // séquentiel peut prendre plusieurs secondes pour rien, chaque lecture étant indépendante.
+  const results = await Promise.all(
+    positions.map(async (position) => {
+      let marketCapUsd: number | null = null;
 
-    // Règle simple, une seule source par phase : bonding curve on-chain avant migration,
-    // DexScreener après — jamais Jupiter, jamais les deux mélangés (voir readPositionMarketCapUsd).
-    if (position.bondingCurveKey) {
-      const onChain = await positionRpcLimiter.run(() =>
-        fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
-      );
-      if (onChain && !onChain.complete) marketCapUsd = onChain.marketCapUsd;
-    }
+      // Règle simple, une seule source par phase : bonding curve on-chain avant migration,
+      // DexScreener après — jamais Jupiter, jamais les deux mélangés (voir readPositionMarketCapUsd).
+      if (position.bondingCurveKey) {
+        const onChain = await positionRpcLimiter.run(() =>
+          fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
+        );
+        if (onChain && !onChain.complete) marketCapUsd = onChain.marketCapUsd;
+      }
 
-    if (marketCapUsd === null) {
-      const dex = await fetchDexScreenerData(position.mint);
-      if (dex && dex.marketCapUsd > 0) marketCapUsd = dex.marketCapUsd;
-    }
+      if (marketCapUsd === null) {
+        const dex = await fetchDexScreenerData(position.mint);
+        if (dex && dex.marketCapUsd > 0) marketCapUsd = dex.marketCapUsd;
+      }
 
-    if (marketCapUsd !== null) {
-      position.lastKnownMarketCapUsd = marketCapUsd;
-      position.lastUpdatedAt = new Date().toISOString();
-      saveOpenPosition(position);
-    }
-  }
+      if (marketCapUsd !== null) {
+        position.lastKnownMarketCapUsd = marketCapUsd;
+        position.lastUpdatedAt = new Date().toISOString();
+        saveOpenPosition(position);
+        return true;
+      }
+      return false;
+    })
+  );
+
+  return { updated: results.filter(Boolean).length, total: positions.length };
 }

@@ -535,29 +535,39 @@ function formatPnl(telegramId: number): string {
   const positions = getOpenPositions(telegramId);
   if (positions.length === 0) return "Aucune position ouverte.";
 
-  const lines = positions.map((p) => {
-    if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) return `<b>${escapeHtml(p.symbol)}</b> (${escapeHtml(p.name)}) — PnL inconnu`;
+  const withPnl = positions.map((p) => {
+    if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) {
+      return { p, gainPercent: null as number | null, pnlUsd: 0 };
+    }
     const gainPercent = ((p.lastKnownMarketCapUsd - p.entryMarketCapUsd) / p.entryMarketCapUsd) * 100;
     const remainingValueUsd = p.positionSizeUsd * (p.remainingPercent / 100);
-    const pnlUsd = remainingValueUsd * (gainPercent / 100);
-    const emoji = gainPercent >= 0 ? "🟢" : "🔴";
-    const pnlSign = pnlUsd >= 0 ? "+" : "";
-    return `${emoji} <b>${escapeHtml(p.symbol)}</b> (${escapeHtml(p.name)}) — <b>${gainPercent >= 0 ? "+" : ""}${gainPercent.toFixed(1)}%</b> (${pnlSign}$${pnlUsd.toFixed(2)}) — investi $${p.positionSizeUsd.toFixed(2)} — entrée $${p.entryMarketCapUsd.toFixed(0)} → actuel $${p.lastKnownMarketCapUsd.toFixed(0)} — reste ${p.remainingPercent}%`;
+    return { p, gainPercent, pnlUsd: remainingValueUsd * (gainPercent / 100) };
   });
 
-  const totalPnlUsd = positions.reduce((sum, p) => {
-    if (!p.lastKnownMarketCapUsd || p.entryMarketCapUsd <= 0) return sum;
-    const gainPercent = ((p.lastKnownMarketCapUsd - p.entryMarketCapUsd) / p.entryMarketCapUsd) * 100;
-    const remainingValueUsd = p.positionSizeUsd * (p.remainingPercent / 100);
-    return sum + remainingValueUsd * (gainPercent / 100);
-  }, 0);
+  // Les meilleures performances en premier — un coup d'œil suffit pour voir ce qui va bien vs mal,
+  // plutôt que de devoir lire ligne par ligne dans un ordre arbitraire.
+  withPnl.sort((a, b) => (b.gainPercent ?? -Infinity) - (a.gainPercent ?? -Infinity));
+
+  const lines = withPnl.map(({ p, gainPercent, pnlUsd }) => {
+    if (gainPercent === null) return `⚪ <b>${escapeHtml(p.symbol)}</b> — PnL inconnu`;
+    const emoji = gainPercent >= 10 ? "🟢" : gainPercent >= 0 ? "🟡" : gainPercent >= -10 ? "🟠" : "🔴";
+    const pnlSign = pnlUsd >= 0 ? "+" : "";
+    const gainSign = gainPercent >= 0 ? "+" : "";
+    const remainingNote = p.remainingPercent < 100 ? ` — reste ${p.remainingPercent}%` : "";
+    return (
+      `${emoji} <b>${escapeHtml(p.symbol)}</b> — <b>${gainSign}${gainPercent.toFixed(1)}%</b> (${pnlSign}$${pnlUsd.toFixed(2)})\n` +
+      `   $${p.entryMarketCapUsd.toFixed(0)} → $${p.lastKnownMarketCapUsd.toFixed(0)} · investi $${p.positionSizeUsd.toFixed(2)}${remainingNote}`
+    );
+  });
+
+  const totalPnlUsd = withPnl.reduce((sum, { pnlUsd }) => sum + pnlUsd, 0);
 
   return [
     "📊 <b>PnL des positions ouvertes</b>",
     "",
-    ...lines,
+    lines.join("\n\n"),
     "",
-    `Total non réalisé : ${totalPnlUsd >= 0 ? "+" : ""}$${totalPnlUsd.toFixed(2)}`,
+    `Total non réalisé : <b>${totalPnlUsd >= 0 ? "+" : ""}$${totalPnlUsd.toFixed(2)}</b>`,
   ].join("\n");
 }
 
@@ -572,8 +582,12 @@ function pnlKeyboard(telegramId: number) {
 }
 
 bot.command("pnl", async (ctx) => {
-  await refreshOpenPositionsPrices(ctx.from.id, connection).catch(() => {});
-  ctx.reply(formatPnl(ctx.from.id), { parse_mode: "HTML", ...pnlKeyboard(ctx.from.id) });
+  const refresh = await refreshOpenPositionsPrices(ctx.from.id, connection).catch(() => null);
+  const staleNote =
+    refresh && refresh.updated < refresh.total
+      ? `\n\n⚠️ ${refresh.total - refresh.updated}/${refresh.total} prix non actualisés (source temporairement indisponible) — les autres restent à jour.`
+      : "";
+  ctx.reply(formatPnl(ctx.from.id) + staleNote, { parse_mode: "HTML", ...pnlKeyboard(ctx.from.id) });
 });
 
 function formatRejected(telegramId: number): string {
@@ -797,18 +811,18 @@ async function formatDashboard(telegramId: number): Promise<string> {
 
   return [
     `📊 <b>DASHBOARD</b> — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
-    "",
     progressBar(totalPortfolioValue, startingReferenceUsd),
-    `Valeur totale du portefeuille : <b>$${totalPortfolioValue.toFixed(2)}</b>`,
-    `— dont cash disponible : $${cashUsd.toFixed(2)}`,
-    `— dont positions ouvertes : $${openPositionsValueUsd.toFixed(2)}`,
-    `PnL total : <b>${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}</b>`,
-    `Positions ouvertes : ${openPositions.length}/${params.maxOpenPositions}`,
-    `Trades clôturés : ${closedTrades.length} — Win rate : ${winRate.toFixed(0)}%`,
-    `Gain moyen : +$${avgProfit.toFixed(2)} — Perte moyenne : $${avgLoss.toFixed(2)}`,
+    "",
+    `💰 <b>$${totalPortfolioValue.toFixed(2)}</b> (cash $${cashUsd.toFixed(2)} + positions $${openPositionsValueUsd.toFixed(2)})`,
+    `PnL total : <b>${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}</b> — Positions : ${openPositions.length}/${params.maxOpenPositions}`,
+    "",
+    `📈 <b>Performance</b> (${closedTrades.length} trades)`,
+    `Win rate : ${winRate.toFixed(0)}% — Gain moy. +$${avgProfit.toFixed(2)} / Perte moy. $${avgLoss.toFixed(2)}`,
     `Max drawdown : -${maxDrawdownPercent.toFixed(1)}%`,
-    `Tokens scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
     ...(streakLine ? [streakLine] : []),
+    "",
+    `🔍 Scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
+    "",
     state.pausedUntil && params.pauseFeatureEnabled
       ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}`
       : "▶️ Actif",
@@ -823,7 +837,7 @@ function backToMenuButton() {
 
 function dashboardKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🔄 Actualiser", "menu_dashboard")],
+    [Markup.button.callback("🔄 Actualiser", "menu_dashboard"), Markup.button.callback("📈 Graphique", "menu_chart")],
     [backToMenuButton()],
   ]);
 }
@@ -907,12 +921,66 @@ bot.command("dashboard", async (ctx) => {
   ctx.reply(await formatDashboard(ctx.from.id), { parse_mode: "HTML", ...dashboardKeyboard() });
 });
 
+bot.command("chart", async (ctx) => {
+  await sendPortfolioChart(ctx, ctx.from.id);
+});
+
+async function sendPortfolioChart(ctx: any, telegramId: number): Promise<void> {
+  const params = getParams(telegramId);
+  const state = getBotState(telegramId, params.startingCapitalUsd);
+  const history = state.capitalHistory ?? [];
+
+  if (history.length < 2) {
+    ctx.reply("Pas encore assez de données pour tracer une courbe — reviens après quelques trades clôturés.");
+    return;
+  }
+
+  // On garde au plus les 60 derniers points pour rester lisible et éviter une URL trop longue.
+  const sampled = history.length > 60 ? history.filter((_, i) => i % Math.ceil(history.length / 60) === 0) : history;
+  const labels = sampled.map((h) => new Date(h.t).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }));
+  const data = sampled.map((h) => h.capital);
+  const isUp = data[data.length - 1] >= data[0];
+
+  const chartConfig = {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Portefeuille ($)",
+          data,
+          borderColor: isUp ? "#22c55e" : "#ef4444",
+          backgroundColor: isUp ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
+          fill: true,
+          pointRadius: 0,
+          borderWidth: 2,
+        },
+      ],
+    },
+    options: {
+      title: { display: true, text: `Évolution du portefeuille — mode ${params.liveTrading ? "LIVE" : "PAPER"}` },
+      scales: { xAxes: [{ ticks: { maxTicksLimit: 8 } }] },
+    },
+  };
+
+  const url = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&width=800&height=450&backgroundColor=white`;
+  try {
+    await ctx.replyWithPhoto(url, { caption: `📈 Capital actuel : $${data[data.length - 1].toFixed(2)} (départ : $${params.startingCapitalUsd})` });
+  } catch {
+    ctx.reply("Impossible de générer le graphique pour l'instant, réessaie dans un instant.");
+  }
+}
+
 // --- Boutons du menu principal ---
 bot.action("menu_pnl", async (ctx) => {
   await ctx.answerCbQuery("🔄 Actualisation...");
   const telegramId = ctx.from!.id;
-  await refreshOpenPositionsPrices(telegramId, connection).catch(() => {});
-  const text = formatPnl(telegramId);
+  const refresh = await refreshOpenPositionsPrices(telegramId, connection).catch(() => null);
+  const staleNote =
+    refresh && refresh.updated < refresh.total
+      ? `\n\n⚠️ ${refresh.total - refresh.updated}/${refresh.total} prix non actualisés (source temporairement indisponible) — les autres restent à jour.`
+      : "";
+  const text = formatPnl(telegramId) + staleNote;
   await editOrReply(ctx, text, pnlKeyboard(telegramId));
 });
 
@@ -967,6 +1035,11 @@ bot.action("menu_dashboard", async (ctx) => {
   await ctx.answerCbQuery();
   const text = await formatDashboard(ctx.from!.id);
   await editOrReply(ctx, text, dashboardKeyboard());
+});
+
+bot.action("menu_chart", async (ctx) => {
+  await ctx.answerCbQuery("📈 Génération du graphique...");
+  await sendPortfolioChart(ctx, ctx.from!.id);
 });
 
 bot.action("menu_home", async (ctx) => {
@@ -1070,6 +1143,7 @@ async function startBot(): Promise<void> {
     { command: "sell", description: "Vendre un token manuellement" },
     { command: "autotrade", description: "Activer/désactiver le bot" },
     { command: "dashboard", description: "Statistiques en temps réel" },
+    { command: "chart", description: "Graphique de l'évolution du portefeuille" },
     { command: "pnl", description: "PnL des positions ouvertes" },
     { command: "openpositions", description: "Positions actuellement ouvertes" },
     { command: "history", description: "Historique des trades clôturés" },
