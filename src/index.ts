@@ -838,6 +838,11 @@ function resetPaperData(telegramId: number): string {
   state.pausedUntil = null;
   state.tokensScanned = 0;
   state.tokensRejected = 0;
+  // Sans ça, la référence de capital du jour resterait bloquée sur l'ancienne valeur d'avant le
+  // reset — un capital qui semble alors avoir "perdu -100%" par rapport à cette référence
+  // périmée, déclenchant la pause de perte quotidienne en boucle même avec un capital sain.
+  state.dailyStartCapitalUsd = params.startingCapitalUsd;
+  state.dailyDate = new Date().toISOString().slice(0, 10);
   // Sans ça, le "Max drawdown" affiché resterait celui d'avant le reset — trompeur juste après
   // avoir remis le capital à zéro.
   state.capitalHistory = [{ t: new Date().toISOString(), capital: params.startingCapitalUsd }];
