@@ -602,6 +602,7 @@ function categorizeRejectionReason(reason: string): string {
     ["créateur détient encore", "👤 Créateur détient trop"],
     ["autorité de mint ou de freeze", "🔓 Autorité non révoquée (honeypot)"],
     ["aucune image ni lien social", "🖼️ Pas d'image/réseaux sociaux"],
+    ["paire de trading trop ancienne", "🏛️ Produit déjà établi (pas un memecoin frais)"],
     ["plus gros holder détient", "🐋 Plus gros holder trop concentré"],
     ["top 10 holders détiennent", "🐋 Top 10 holders trop concentrés"],
     ["fenêtre d'observation expirée", "⏱️ Expiré sans setup validé"],

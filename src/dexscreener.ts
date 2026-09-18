@@ -13,6 +13,9 @@ export interface DexScreenerSnapshot {
   /** Variation de prix sur les 5 dernières minutes — détecte un token en train de s'effondrer
    * après un pic, même si son market cap reste dans la fourchette acceptable à l'instant T. */
   priceChange5mPercent: number | null;
+  /** Âge de la paire en minutes — sert à exclure les produits déjà établis (actions tokenisées,
+   * staking liquide...) qui peuvent se glisser dans le scan mais n'ont rien d'un memecoin frais. */
+  pairAgeMinutes: number | null;
 }
 
 /**
@@ -44,6 +47,7 @@ export async function fetchDexScreenerData(mint: string): Promise<DexScreenerSna
       hasImage: typeof pair.info?.imageUrl === "string" && pair.info.imageUrl.length > 0,
       hasSocialPresence: (pair.info?.socials?.length ?? 0) > 0 || (pair.info?.websites?.length ?? 0) > 0,
       priceChange5mPercent: typeof pair.priceChange?.m5 === "number" ? pair.priceChange.m5 : null,
+      pairAgeMinutes: typeof pair.pairCreatedAt === "number" ? (Date.now() - pair.pairCreatedAt) / 60000 : null,
     };
   } catch {
     return null; // réseau lent, rate limit, ou token pas encore indexé — on réessaiera au prochain cycle

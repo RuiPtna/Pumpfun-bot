@@ -23,6 +23,8 @@ export interface TokenWatch {
   hasSocialPresence: boolean | null;
   /** Variation de prix sur les 5 dernières minutes (DexScreener) — détecte un "couteau qui tombe" */
   lastPriceChange5mPercent: number | null;
+  /** Âge de la paire de trading en minutes — exclut les produits déjà établis */
+  lastPairAgeMinutes: number | null;
   lastRealSolReserves: number;
   lastBondingCurveProgressPercent: number;
   qualityChecked: boolean;
@@ -57,6 +59,7 @@ export function createTokenWatch(
     hasImage: null,
     hasSocialPresence: null,
     lastPriceChange5mPercent: null,
+    lastPairAgeMinutes: null,
     lastSells5m: 0,
     lastRealSolReserves: 0,
     lastBondingCurveProgressPercent: 0,
