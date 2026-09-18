@@ -85,7 +85,7 @@ export const defaultParams: StrategyParams = {
   minAgeMinutes: 0, // "on achète tout" — aucune attente
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 12 min compte désormais
   minMarketCapUsd: 0, // "on achète tout" — aucun plancher
-  maxMarketCapUsd: 999999999999, // "on achète tout" — aucun plafond
+  maxMarketCapUsd: 2000000000, // 2 milliards — pas un filtre de qualité, juste un garde-fou contre les lectures de données impossibles (aucun vrai memecoin n'atteint ce niveau)
   minRealSolInvested: 0,
   maxCreatorHoldingPercent: 100,
   minCreatorInitialBuySol: 0,
@@ -101,7 +101,7 @@ export const defaultParams: StrategyParams = {
 
   stopLossPercent: -10,
   tp1Percent: 30,
-  tp1SellPercent: 100, // sortie unique et complète à +40% — plus simple, rien ne reste à gérer ensuite
+  tp1SellPercent: 100, // sortie unique et complète à +30% — plus simple, rien ne reste à gérer ensuite
   tp2Percent: 60,
   tp2SellPercent: 0, // palier désactivé — rien ne reste après TP1
   tp3Percent: 120,
@@ -113,7 +113,7 @@ export const defaultParams: StrategyParams = {
   trailingStopPercent: 15,
   maxHoldMinutes: 45,
 
-  maxDailyLossPercent: 80,
+  maxDailyLossPercent: 100, // "on achète tout" — désactivé en pratique (100% = ne se déclenche jamais)
   consecutiveLossesForPause: 3,
   pauseDurationMinutes: 30,
   minScoreAfterPause: 80,
