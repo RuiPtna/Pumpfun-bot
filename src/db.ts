@@ -48,6 +48,9 @@ export interface OpenPosition {
   remainingPercent: number;
   /** Paliers de take-profit déjà déclenchés, pour ne pas les redéclencher */
   takeProfitLevelsHit: number[];
+  /** D'où vient ce token : détection pump.fun native, flux multi-plateformes, ou copy-trading.
+   * Permet de comparer la performance réelle de chaque source plutôt que de la deviner. */
+  source?: "pumpfun" | "multiplatform" | "copytrade";
   openedAt: string;
 }
 
@@ -68,6 +71,8 @@ export interface ClosedTrade {
   pnlUsd: number;
   pnlPercent: number;
   wasPaper: boolean;
+  /** Source du token — permet le comparatif de performance par origine dans le dashboard. */
+  source?: "pumpfun" | "multiplatform" | "copytrade";
   closedAt: string;
 }
 

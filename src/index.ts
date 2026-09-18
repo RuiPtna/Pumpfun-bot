@@ -100,12 +100,8 @@ async function editOrReply(ctx: any, text: string, keyboard: ReturnType<typeof M
 }
 
 function mainMenuKeyboard(telegramId: number) {
-  const isRunning = autoTraderByUser.has(telegramId);
-  const toggleButton = isRunning
-    ? Markup.button.callback("🟢 Auto : ACTIF (toucher pour arrêter)", "menu_auto_off")
-    : Markup.button.callback("🔴 Auto : ARRÊTÉ (toucher pour démarrer)", "menu_auto_on");
   return Markup.inlineKeyboard([
-    [toggleButton],
+    [Markup.button.callback("🟢 Auto ON", "menu_auto_on"), Markup.button.callback("🔴 Auto OFF", "menu_auto_off")],
     [Markup.button.callback("📊 PnL", "menu_pnl"), Markup.button.callback("📂 Positions", "menu_positions")],
     [Markup.button.callback("💰 Solde", "menu_balance"), Markup.button.callback("📈 Dashboard", "menu_dashboard")],
     [Markup.button.callback("🚫 Rejetés", "menu_rejected"), Markup.button.callback("📜 Historique", "menu_history")],
@@ -325,6 +321,7 @@ function formatConfig(telegramId: number): string {
     `Concentration holders max : créateur ${p.maxCreatorHoldingPercent}%, plus gros holder ${p.maxTopHolderPercent}%, top 10 ${p.maxTop10HolderPercent}%`,
     `Achat initial créateur min : ${p.minCreatorInitialBuySol} SOL — Autorités révoquées exigées : ${p.requireRevokedAuthorities ? "🟢 oui" : "🔴 non"}`,
     `Image/lien social exigé : ${p.requireTokenMetadata ? "🟢 oui" : "🔴 non"}`,
+    `RugCheck : ${p.maxRugcheckRiskScore > 0 ? `🟢 actif (risque max ${p.maxRugcheckRiskScore}/100)` : "🔴 désactivé"}`,
     `Multi-plateformes (LetsBonk, etc.) : ${p.enableMultiPlatform ? "🟢 activé" : "🔴 désactivé"}`,
     `Progression bonding curve min : ${p.minBondingCurveProgressPercent}%`,
     "",
@@ -621,6 +618,7 @@ function categorizeRejectionReason(reason: string): string {
     ["autorité de mint ou de freeze", "🔓 Autorité non révoquée (honeypot)"],
     ["aucune image ni lien social", "🖼️ Pas d'image/réseaux sociaux"],
     ["paire de trading trop ancienne", "🏛️ Produit déjà établi (pas un memecoin frais)"],
+    ["RugCheck", "🛡️ RugCheck — risque élevé"],
     ["plus gros holder détient", "🐋 Plus gros holder trop concentré"],
     ["top 10 holders détiennent", "🐋 Top 10 holders trop concentrés"],
     ["fenêtre d'observation expirée", "⏱️ Expiré sans setup validé"],
@@ -806,6 +804,37 @@ async function formatDashboard(telegramId: number): Promise<string> {
   const totalPortfolioValue = cashUsd + openPositionsValueUsd;
   const totalPnl = totalPortfolioValue - startingReferenceUsd;
 
+  // Comparatif de performance par source — la seule façon de trancher objectivement entre
+  // pump.fun natif, flux multi-plateformes et copy-trading, plutôt que de se fier à une
+  // impression. N'apparaît que s'il y a vraiment plusieurs sources avec assez de trades.
+  const sourceLabels: Record<string, string> = {
+    pumpfun: "pump.fun",
+    multiplatform: "Multi-plateformes",
+    copytrade: "Copy-trading",
+  };
+  const bySource = new Map<string, { wins: number; total: number; pnl: number }>();
+  for (const t of closedTrades) {
+    const key = t.source ?? "pumpfun";
+    const entry = bySource.get(key) ?? { wins: 0, total: 0, pnl: 0 };
+    entry.total += 1;
+    if (t.pnlUsd > 0) entry.wins += 1;
+    entry.pnl += t.pnlUsd;
+    bySource.set(key, entry);
+  }
+  const sourceBreakdownLines =
+    bySource.size > 1
+      ? [
+          "",
+          "🔀 <b>Performance par source</b>",
+          ...[...bySource.entries()]
+            .sort((a, b) => b[1].pnl - a[1].pnl)
+            .map(
+              ([key, s]) =>
+                `${sourceLabels[key] ?? key} : ${s.total} trades — ${((s.wins / s.total) * 100).toFixed(0)}% — ${s.pnl >= 0 ? "+" : ""}$${s.pnl.toFixed(2)}`
+            ),
+        ]
+      : [];
+
   const streakLine =
     state.consecutiveWins >= 3
       ? `🔥 Série en cours : ${state.consecutiveWins} gains d'affilée !`
@@ -826,6 +855,7 @@ async function formatDashboard(telegramId: number): Promise<string> {
     ...(streakLine ? [streakLine] : []),
     "",
     `🔍 Scannés : ${state.tokensScanned} — Rejetés : ${state.tokensRejected}`,
+    ...sourceBreakdownLines,
     "",
     state.pausedUntil && params.pauseFeatureEnabled
       ? `⏸️ En pause jusqu'à ${new Date(state.pausedUntil).toLocaleString("fr-FR")}`

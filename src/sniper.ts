@@ -9,6 +9,8 @@ import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./s
 import { fetchDexScreenerData } from "./dexscreener";
 import { fetchBondingCurveMarketCap } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
+import { getDynamicPriorityFeeSol } from "./priorityFee";
+import { fetchRugCheckSummary } from "./rugcheck";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
 import { checkMintAuthorities } from "./mintAuthority";
 import { rpcLimiter, positionRpcLimiter } from "./rpcLimiter";
@@ -438,6 +440,32 @@ export class AutoTrader {
         }
       }
 
+      // Analyse de risque externe via RugCheck — agrège des vérifications qu'on ne peut pas
+      // faire nous-mêmes à moindre coût : liquidité verrouillée ou non, métadonnées modifiables,
+      // clusters de wallets liés au créateur, comportements d'initiés. C'est l'intégration
+      // standard des bots open source sérieux.
+      // Si le service ne répond pas ou ne connaît pas encore le token (très fréquent sur un
+      // lancement récent), on NE bloque PAS l'achat — sinon une panne du service gèlerait tout
+      // le bot. Seule une réponse explicite et négative provoque un rejet.
+      if (this.params.maxRugcheckRiskScore > 0) {
+        const rug = await fetchRugCheckSummary(mint);
+        if (rug) {
+          if (rug.rugged) {
+            this.rejectWatch(mint, "RugCheck : token déjà identifié comme rugpull", 0);
+            return;
+          }
+          if (rug.riskScore > this.params.maxRugcheckRiskScore) {
+            const detail = rug.risks.length > 0 ? ` — ${rug.risks.slice(0, 3).join(", ")}` : "";
+            this.rejectWatch(
+              mint,
+              `RugCheck : score de risque ${rug.riskScore}/100 (max ${this.params.maxRugcheckRiskScore})${detail}`,
+              0
+            );
+            return;
+          }
+        }
+      }
+
       // Un produit déjà établi (action tokenisée, staking liquide...) peut apparaître dans le
       // scan sans être un memecoin fraîchement lancé — sa paire de trading existe alors depuis
       // longtemps, contrairement à un vrai token pump.fun tout juste créé ou gradué. Ces
@@ -477,7 +505,8 @@ export class AutoTrader {
       watch.creatorInitialBuySol,
       reading.marketCapUsd,
       score.total,
-      reading.hasTradeCounts
+      reading.hasTradeCounts,
+      watch.platform === "other" ? "multiplatform" : "pumpfun"
     );
   }
 
@@ -532,13 +561,14 @@ export class AutoTrader {
         const balanceSol = balanceLamports / 1_000_000_000;
         if (balanceSol - positionSizeSol - this.params.priorityFeeSol - 0.001 < this.params.reserveSolBalance) return;
 
+        const buyFeeSol = await getDynamicPriorityFeeSol(this.connection, "normal", this.params.priorityFeeSol);
         const result = await buyWithFallback(
           this.connection,
           this.signer,
           mint,
           positionSizeSol,
           this.params.maxSlippagePercent,
-          this.params.priorityFeeSol
+          buyFeeSol
         );
         signature = result.signature;
         if (result.usedFallback) buyFallbackNote = "\nℹ️ Acheté via Jupiter (repli)";
@@ -570,6 +600,7 @@ export class AutoTrader {
         positionSizeUsd,
         remainingPercent: 100,
         takeProfitLevelsHit: [],
+        source: "copytrade",
         openedAt: new Date().toISOString(),
       };
       saveOpenPosition(position);
@@ -602,7 +633,8 @@ export class AutoTrader {
     creatorInitialBuySol: number,
     marketCapUsd: number,
     score: number,
-    hasTradeCounts: boolean
+    hasTradeCounts: boolean,
+    source: "pumpfun" | "multiplatform" = "pumpfun"
   ): Promise<void> {
     // Garde-fou n°2 (défense en profondeur) : ne jamais acheter un token pour lequel une
     // position est déjà ouverte — l'écraser effacerait sa progression réelle (paliers déjà
@@ -715,13 +747,14 @@ export class AutoTrader {
           return;
         }
 
+        const buyFeeSol = await getDynamicPriorityFeeSol(this.connection, "normal", this.params.priorityFeeSol);
         const result = await buyWithFallback(
           this.connection,
           this.signer,
           mint,
           positionSizeSol,
           this.params.maxSlippagePercent,
-          this.params.priorityFeeSol
+          buyFeeSol
         );
         signature = result.signature;
         if (result.usedFallback) {
@@ -780,6 +813,7 @@ export class AutoTrader {
         positionSizeUsd,
         remainingPercent: 100,
         takeProfitLevelsHit: [],
+        source,
         openedAt: new Date().toISOString(),
       };
       saveOpenPosition(position);
@@ -1005,13 +1039,18 @@ export class AutoTrader {
       let fallbackNote = "";
 
       if (this.params.liveTrading) {
+        const sellFeeSol = await getDynamicPriorityFeeSol(
+          this.connection,
+          isUrgent ? "urgent" : "normal",
+          this.params.priorityFeeSol
+        );
         const result = await sellWithFallback(
           this.connection,
           this.signer,
           position.mint,
           `${sellPercent}%`,
           effectiveSlippage,
-          this.params.priorityFeeSol
+          sellFeeSol
         );
         signature = result.signature;
         if (result.usedFallback) {
@@ -1042,6 +1081,7 @@ export class AutoTrader {
         pnlUsd: pnlUsdForSlice,
         pnlPercent: gainPercent,
         wasPaper: !this.params.liveTrading,
+        source: position.source,
         closedAt: new Date().toISOString(),
       });
 
@@ -1115,7 +1155,9 @@ export async function manualSellPosition(
 
   let signature: string;
   if (params.liveTrading) {
-    const result = await sellWithFallback(connection, signer, mint, "100%", params.maxSlippagePercent, params.priorityFeeSol);
+    // Vente manuelle = l'utilisateur veut sortir maintenant, on traite ça comme urgent.
+    const feeSol = await getDynamicPriorityFeeSol(connection, "urgent", params.priorityFeeSol);
+    const result = await sellWithFallback(connection, signer, mint, "100%", params.maxSlippagePercent, feeSol);
     signature = result.signature;
   } else {
     const gainPercent =

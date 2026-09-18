@@ -28,6 +28,9 @@ export interface StrategyParams {
   requireRevokedAuthorities: boolean;
   /** Rejette les tokens sans image ET sans aucun lien social/site web (signal de lancement bâclé) */
   requireTokenMetadata: boolean;
+  /** Score de risque RugCheck maximum accepté (0–100, plus haut = plus risqué).
+   * 0 = filtre désactivé. Un token signalé comme déjà "rugged" est rejeté quel que soit ce seuil. */
+  maxRugcheckRiskScore: number;
   /** Rejette un token dont le prix a chuté de plus que ce seuil sur les 5 dernières minutes —
    * détecte un "couteau qui tombe" (pic suivi d'un effondrement), même si son market cap reste
    * dans la fourchette acceptable à l'instant T. Valeur négative, ex. -15. */
@@ -92,6 +95,7 @@ export const defaultParams: StrategyParams = {
   minBondingCurveProgressPercent: 0,
   requireRevokedAuthorities: false, // "on achète tout" — plus aucun filtre anti-rug, choix assumé
   requireTokenMetadata: false,
+  maxRugcheckRiskScore: 0, // désactivé par défaut — cohérent avec "on achète tout"
   maxRecent5mDropPercent: -100, // "on achète tout" — ne bloque jamais
   enableMultiPlatform: true,
   maxTopHolderPercent: 100,
@@ -162,6 +166,7 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "minScoreAfterPause",
   "maxSlippagePercent",
   "maxRecent5mDropPercent",
+  "maxRugcheckRiskScore",
   "priorityFeeSol",
   "reserveSolBalance",
 ];
