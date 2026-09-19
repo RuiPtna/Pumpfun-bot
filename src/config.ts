@@ -97,7 +97,7 @@ export const defaultParams: StrategyParams = {
   requireTokenMetadata: false,
   maxRugcheckRiskScore: 0, // désactivé par défaut — cohérent avec "on achète tout"
   maxRecent5mDropPercent: -100, // "on achète tout" — ne bloque jamais
-  enableMultiPlatform: true,
+  enableMultiPlatform: false, // pump.fun uniquement — les autres plateformes apportaient surtout du bruit
   maxTopHolderPercent: 100,
   maxTop10HolderPercent: 100,
 
