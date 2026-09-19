@@ -7,13 +7,13 @@ import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
 import { fetchDexScreenerData } from "./dexscreener";
-import { fetchBondingCurveMarketCap } from "./bondingCurve";
+import { fetchBondingCurveMarketCap, fetchBondingCurveResult, deriveBondingCurvePda } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
 import { getDynamicPriorityFeeSol } from "./priorityFee";
 import { fetchRugCheckSummary } from "./rugcheck";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
 import { checkMintAuthorities } from "./mintAuthority";
-import { rpcLimiter, positionRpcLimiter } from "./rpcLimiter";
+import { rpcLimiter, positionRpcLimiter, dexScreenerPositionLimiter, dexScreenerScanLimiter } from "./rpcLimiter";
 import { escapeHtml } from "./htmlEscape";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
@@ -54,6 +54,9 @@ interface MarketCapReading {
   hasTradeCounts: boolean;
   realSolReserves: number;
   bondingCurveProgressPercent: number;
+  /** D'où vient ce chiffre — rendu visible dans le message d'achat pour pouvoir diagnostiquer
+   * immédiatement une entrée aberrante au lieu de deviner quelle source l'a produite. */
+  source: "bonding-curve" | "dexscreener";
 }
 
 export class AutoTrader {
@@ -324,22 +327,46 @@ export class AutoTrader {
     const solPriceUsd = await getSolPriceUsd();
     const limiter = priority === "position" ? positionRpcLimiter : rpcLimiter;
 
-    if (bondingCurveKey) {
-      const onChain = await limiter.run(() => fetchBondingCurveMarketCap(this.connection, bondingCurveKey, solPriceUsd));
-      if (onChain && !onChain.complete) {
+    // Si l'adresse de la bonding curve n'a pas été transmise par l'événement de détection
+    // (migration, copy-trading, événement incomplet), on la DÉRIVE du mint : c'est une PDA
+    // calculable. Ça rend tout token pré-migration lisible on-chain instantanément, au lieu de
+    // dépendre de DexScreener — sujet à limite de débit et à un délai d'indexation.
+    const curveKey = bondingCurveKey ?? deriveBondingCurvePda(mint);
+
+    if (curveKey) {
+      const result = await limiter.run(() => fetchBondingCurveResult(this.connection, curveKey, solPriceUsd));
+
+      if (result.status === "ok" && !result.snapshot.complete) {
         return {
-          marketCapUsd: onChain.marketCapUsd,
+          marketCapUsd: result.snapshot.marketCapUsd,
           hasTradeCounts: false,
-          realSolReserves: onChain.realSolReserves,
-          bondingCurveProgressPercent: onChain.bondingCurveProgressPercent,
+          realSolReserves: result.snapshot.realSolReserves,
+          bondingCurveProgressPercent: result.snapshot.bondingCurveProgressPercent,
+          source: "bonding-curve",
         };
       }
-      // Si complete=true (gradué) ou lecture on-chain indisponible, on tente DexScreener en repli
+
+      // Échec TECHNIQUE (RPC, données illisibles) : le token est très probablement toujours
+      // pré-migration. Basculer sur DexScreener donnerait un market cap calculé sur une base
+      // différente de la bonding curve — c'est exactement ce qui produisait des entrées
+      // enregistrées à 100k+ sur des tokens réellement à ~3k. On préfère ne rien renvoyer et
+      // réessayer au cycle suivant plutôt que de trader sur une valeur incohérente.
+      if (result.status === "error") return null;
+
+      // status "not_found" ou snapshot.complete : le token a gradué, DexScreener est alors
+      // la source légitime — on continue ci-dessous.
     }
 
-    const dex = await fetchDexScreenerData(mint);
+    const dexLimiter = priority === "position" ? dexScreenerPositionLimiter : dexScreenerScanLimiter;
+    const dex = await dexLimiter.run(() => fetchDexScreenerData(mint));
     if (dex && dex.marketCapUsd > 0) {
-      return { marketCapUsd: dex.marketCapUsd, hasTradeCounts: true, realSolReserves: 0, bondingCurveProgressPercent: 100 };
+      return {
+        marketCapUsd: dex.marketCapUsd,
+        hasTradeCounts: true,
+        realSolReserves: 0,
+        bondingCurveProgressPercent: 100,
+        source: "dexscreener",
+      };
     }
 
     return null;
@@ -363,7 +390,7 @@ export class AutoTrader {
     if (!reading) return; // pas encore de donnée exploitable, on réessaiera au prochain cycle
 
     if (reading.hasTradeCounts) {
-      const dex = await fetchDexScreenerData(mint);
+      const dex = await dexScreenerScanLimiter.run(() => fetchDexScreenerData(mint));
       if (dex) {
         watch.lastLiquidityUsd = dex.liquidityUsd;
         watch.lastBuys5m = dex.buys5m;
@@ -792,10 +819,14 @@ export class AutoTrader {
       // de bonding curve lu) qu'un vrai mouvement de prix ; mieux vaut garder la valeur de
       // décision déjà établie que de partir sur une entrée potentiellement fausse, qui fausserait
       // tout le suivi du stop-loss/TP ensuite.
+      let entrySource: string = "inconnue";
       if (freshReading && freshReading.marketCapUsd > 0) {
+        entrySource = freshReading.source;
         const ratio = freshReading.marketCapUsd / marketCapUsd;
         if (ratio <= 3 && ratio >= 1 / 3) {
           entryMarketCapUsd = freshReading.marketCapUsd;
+        } else {
+          entrySource = `${freshReading.source} (écart ${ratio.toFixed(1)}x rejeté)`;
         }
       }
 
@@ -841,7 +872,8 @@ export class AutoTrader {
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
         `${BUY_FLAVOR_PHRASES[Math.floor(Math.random() * BUY_FLAVOR_PHRASES.length)]} — ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
-          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`,
+          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap\n` +
+          `<i>source prix : ${entrySource}</i>${txLine}${buyFallbackNote}`,
         {
           reply_markup: {
             inline_keyboard: [
@@ -1224,15 +1256,23 @@ export async function refreshOpenPositionsPrices(telegramId: number, connection:
 
     // Règle simple, une seule source par phase : bonding curve on-chain avant migration,
     // DexScreener après — jamais Jupiter, jamais les deux mélangés (voir readPositionMarketCapUsd).
-    if (position.bondingCurveKey) {
-      const onChain = await positionRpcLimiter.run(() =>
-        fetchBondingCurveMarketCap(connection, position.bondingCurveKey!, solPriceUsd)
-      );
-      if (onChain && !onChain.complete) marketCapUsd = onChain.marketCapUsd;
+    // Même principe que readMarketCap : la clé de bonding curve est dérivable du mint, donc
+    // on ne dépend jamais de DexScreener pour un token encore pré-migration.
+    const curveKey = position.bondingCurveKey ?? deriveBondingCurvePda(position.mint);
+    let curveFailedTechnically = false;
+    if (curveKey) {
+      const result = await positionRpcLimiter.run(() => fetchBondingCurveResult(connection, curveKey, solPriceUsd));
+      if (result.status === "ok" && !result.snapshot.complete) {
+        marketCapUsd = result.snapshot.marketCapUsd;
+      } else if (result.status === "error") {
+        // Échec technique sur un token pré-migration : on ne bascule PAS sur DexScreener,
+        // dont le market cap repose sur une base différente. On marque l'échec et on réessaiera.
+        curveFailedTechnically = true;
+      }
     }
 
-    if (marketCapUsd === null) {
-      const dex = await fetchDexScreenerData(position.mint);
+    if (marketCapUsd === null && !curveFailedTechnically) {
+      const dex = await dexScreenerPositionLimiter.run(() => fetchDexScreenerData(position.mint));
       if (dex && dex.marketCapUsd > 0) marketCapUsd = dex.marketCapUsd;
     }
 

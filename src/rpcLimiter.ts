@@ -38,3 +38,15 @@ export const rpcLimiter = new RpcLimiter(5);
 // afflux de nouveaux tokens à scanner peut retarder la mise à jour du prix de tes positions
 // existantes — inacceptable, car c'est la donnée la plus critique (stop-loss, take-profit, /pnl).
 export const positionRpcLimiter = new RpcLimiter(3);
+
+// --- Budgets DexScreener ---
+// DexScreener applique sa propre limite (~300 requêtes/minute, soit 5/s, partagée). Sans
+// limitation de notre côté, le SCAN — qui interroge chaque token candidat à chaque cycle —
+// consomme tout le quota et fait refuser les requêtes des POSITIONS ouvertes. C'est exactement
+// ce qui produisait les "2/4 prix non actualisés" : ce n'est pas DexScreener qui est lent,
+// c'est nous qui gaspillons le quota sur des candidats au détriment de l'argent engagé.
+//
+// On coupe donc le budget en deux, comme pour le RPC, en donnant la part majoritaire aux
+// positions : mieux vaut scanner un peu moins vite que de perdre le prix de ses positions.
+export const dexScreenerPositionLimiter = new RpcLimiter(3);
+export const dexScreenerScanLimiter = new RpcLimiter(1);

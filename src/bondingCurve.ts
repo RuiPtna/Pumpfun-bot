@@ -27,6 +27,32 @@ export interface BondingCurveState {
   complete: boolean;
 }
 
+/** Programme pump.fun (bonding curve), identique sur Mainnet et Devnet. */
+const PUMP_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+
+/**
+ * Dérive l'adresse du compte bonding curve à partir du seul mint.
+ *
+ * C'est une PDA de seeds ["bonding-curve", mint] sur le programme pump.fun — documenté
+ * officiellement. Conséquence importante : on n'a JAMAIS besoin qu'un événement nous fournisse
+ * cette adresse. Un token détecté par migration, par copy-trading, ou dont l'événement de
+ * création n'a pas transmis la clé, reste lisible on-chain instantanément.
+ *
+ * Sans ça, ces tokens retombaient sur DexScreener — sujet à limite de débit et qui n'indexe
+ * pas immédiatement un lancement récent, d'où les "prix non actualisés".
+ */
+export function deriveBondingCurvePda(mint: string): string | null {
+  try {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("bonding-curve"), new PublicKey(mint).toBuffer()],
+      PUMP_PROGRAM_ID
+    );
+    return pda.toBase58();
+  } catch {
+    return null;
+  }
+}
+
 const SOL_DECIMALS = 9;
 const TOKEN_DECIMALS = 6; // standard pour les tokens pump.fun
 
@@ -64,18 +90,34 @@ export interface BondingCurveSnapshot {
 const CURVE_START_REAL_TOKENS = 793_100_000;
 const CURVE_GRADUATION_REAL_TOKENS = 206_900_000;
 
-export async function fetchBondingCurveMarketCap(
+/**
+ * Résultat distinguant explicitement les cas — indispensable : un échec technique et un compte
+ * inexistant demandent des réactions OPPOSÉES.
+ *
+ * - "ok"        : lecture valide.
+ * - "not_found" : le compte n'existe pas → le token a gradué (ou n'est pas un token pump.fun).
+ *                 DexScreener devient alors la bonne source.
+ * - "error"     : échec technique (RPC, données illisibles). Le token est probablement TOUJOURS
+ *                 pré-migration : basculer sur DexScreener donnerait un market cap calculé sur
+ *                 une base différente. Il faut réessayer, pas changer de source.
+ */
+export type BondingCurveResult =
+  | { status: "ok"; snapshot: BondingCurveSnapshot }
+  | { status: "not_found" }
+  | { status: "error" };
+
+export async function fetchBondingCurveResult(
   connection: Connection,
   bondingCurveKey: string,
   solPriceUsd: number
-): Promise<BondingCurveSnapshot | null> {
+): Promise<BondingCurveResult> {
   try {
     const accountInfo = await connection.getAccountInfo(new PublicKey(bondingCurveKey));
-    if (!accountInfo) return null;
+    if (!accountInfo) return { status: "not_found" };
 
     const state = parseBondingCurveAccount(accountInfo.data);
-    if (!state) return null;
-    if (state.virtualSolReserves <= 0n || state.virtualTokenReserves <= 0n) return null;
+    if (!state) return { status: "error" };
+    if (state.virtualSolReserves <= 0n || state.virtualTokenReserves <= 0n) return { status: "error" };
 
     const priceSolPerToken =
       Number(state.virtualSolReserves) / 10 ** SOL_DECIMALS / (Number(state.virtualTokenReserves) / 10 ** TOKEN_DECIMALS);
@@ -84,7 +126,7 @@ export async function fetchBondingCurveMarketCap(
 
     // Garde-fou : une valeur aberrante (ex. si le layout ne correspond plus au programme actuel)
     // vaut mieux être ignorée que de déclencher un trade sur une donnée fausse.
-    if (!Number.isFinite(marketCapSol) || marketCapSol <= 0 || marketCapSol > 100_000_000) return null;
+    if (!Number.isFinite(marketCapSol) || marketCapSol <= 0 || marketCapSol > 100_000_000) return { status: "error" };
 
     const realTokenReservesTokens = Number(state.realTokenReserves) / 10 ** TOKEN_DECIMALS;
     const rawProgress =
@@ -92,12 +134,25 @@ export async function fetchBondingCurveMarketCap(
     const bondingCurveProgressPercent = Math.max(0, Math.min(100, rawProgress));
 
     return {
-      marketCapUsd: marketCapSol * solPriceUsd,
-      complete: state.complete,
-      realSolReserves: Number(state.realSolReserves) / 10 ** SOL_DECIMALS,
-      bondingCurveProgressPercent,
+      status: "ok",
+      snapshot: {
+        marketCapUsd: marketCapSol * solPriceUsd,
+        complete: state.complete,
+        realSolReserves: Number(state.realSolReserves) / 10 ** SOL_DECIMALS,
+        bondingCurveProgressPercent,
+      },
     };
   } catch {
-    return null;
+    return { status: "error" };
   }
+}
+
+/** Ancienne signature, conservée pour les appels qui n'ont pas besoin de distinguer les cas. */
+export async function fetchBondingCurveMarketCap(
+  connection: Connection,
+  bondingCurveKey: string,
+  solPriceUsd: number
+): Promise<BondingCurveSnapshot | null> {
+  const result = await fetchBondingCurveResult(connection, bondingCurveKey, solPriceUsd);
+  return result.status === "ok" ? result.snapshot : null;
 }
