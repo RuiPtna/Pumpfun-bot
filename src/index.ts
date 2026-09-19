@@ -328,7 +328,7 @@ function formatConfig(telegramId: number): string {
     "<b>📉 Sorties</b>",
     `Stop-loss : ${p.stopLossPercent}%`,
     `TP1 +${p.tp1Percent}% → vend ${p.tp1SellPercent}% | TP2 +${p.tp2Percent}% → vend ${p.tp2SellPercent}% | TP3 +${p.tp3Percent}% → vend ${p.tp3SellPercent}% | TP4 +${p.tp4Percent}% → vend ${p.tp4SellPercent}% | TP5 +${p.tp5Percent}% → vend ${p.tp5SellPercent}%`,
-    `Trailing stop (après TP3) : ${p.trailingStopPercent}%`,
+    `Trailing stop (après TP1) : ${p.trailingStopPercent}%`,
     `Durée max sans TP touché : ${p.maxHoldMinutes} min`,
     "",
     "<b>🛡️ Sécurité</b>",

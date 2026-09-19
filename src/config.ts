@@ -105,13 +105,13 @@ export const defaultParams: StrategyParams = {
 
   stopLossPercent: -10,
   tp1Percent: 30,
-  tp1SellPercent: 100, // sortie unique et complète à +30% — plus simple, rien ne reste à gérer ensuite
+  tp1SellPercent: 70, // sécurise l'essentiel tôt : récupère ~91% de la mise dès +30%
   tp2Percent: 60,
-  tp2SellPercent: 0, // palier désactivé — rien ne reste après TP1
+  tp2SellPercent: 20,
   tp3Percent: 120,
-  tp3SellPercent: 0,
+  tp3SellPercent: 10, // le reliquat court, protégé par le stop à l'équilibre + le trailing stop
   tp4Percent: 250,
-  tp4SellPercent: 0,
+  tp4SellPercent: 0, // paliers inutilisés : tout est vendu au plus tard à TP3
   tp5Percent: 500,
   tp5SellPercent: 0,
   trailingStopPercent: 15,
