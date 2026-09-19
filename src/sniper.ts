@@ -340,10 +340,16 @@ export class AutoTrader {
     // venaient d'une autre source calculant sur une base différente.
     const pfLimiter = priority === "position" ? pumpFunPositionLimiter : pumpFunScanLimiter;
     const pf = await pfLimiter.run(() => fetchPumpFunCoin(mint));
-    if (pf && !pf.complete) {
+    // On utilise ce chiffre QUEL QUE SOIT l'état du token : pump.fun publie son market cap
+    // avant ET après graduation. L'écarter une fois le token gradué renvoyait inutilement
+    // vers DexScreener, qui calcule sur une autre base — c'est ce qui restait comme source
+    // d'écarts après le premier correctif.
+    if (pf) {
       return {
         marketCapUsd: pf.marketCapUsd,
-        hasTradeCounts: false,
+        // Un token gradué a des compteurs d'achats/ventes exploitables via DexScreener ;
+        // avant graduation, non. Ça ne change pas la source du PRIX, seulement le scoring.
+        hasTradeCounts: pf.complete,
         realSolReserves: pf.realSolReserves,
         // Cette API ne publie pas la progression de courbe. On renvoie 100 (= non bloquant)
         // plutôt que 0 : une donnée absente ne doit jamais faire rejeter un token, au même
@@ -1280,10 +1286,16 @@ export async function refreshOpenPositionsPrices(telegramId: number, connection:
   const readOne = async (position: OpenPosition): Promise<boolean> => {
     let marketCapUsd: number | null = null;
 
-    // Règle simple, une seule source par phase : bonding curve on-chain avant migration,
-    // DexScreener après — jamais Jupiter, jamais les deux mélangés (voir readPositionMarketCapUsd).
-    // Même principe que readMarketCap : la clé de bonding curve est dérivable du mint, donc
-    // on ne dépend jamais de DexScreener pour un token encore pré-migration.
+    // Même priorité que readMarketCap : pump.fun d'abord (chiffre officiel du site), puis
+    // lecture on-chain, puis DexScreener uniquement pour un token réellement gradué.
+    const pf = await pumpFunPositionLimiter.run(() => fetchPumpFunCoin(position.mint));
+    if (pf) {
+      position.lastKnownMarketCapUsd = pf.marketCapUsd;
+      position.lastUpdatedAt = new Date().toISOString();
+      saveOpenPosition(position);
+      return true;
+    }
+
     const curveKey = position.bondingCurveKey ?? deriveBondingCurvePda(position.mint);
     let curveFailedTechnically = false;
     if (curveKey) {
