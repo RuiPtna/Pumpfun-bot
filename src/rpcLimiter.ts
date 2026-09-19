@@ -50,3 +50,9 @@ export const positionRpcLimiter = new RpcLimiter(3);
 // positions : mieux vaut scanner un peu moins vite que de perdre le prix de ses positions.
 export const dexScreenerPositionLimiter = new RpcLimiter(3);
 export const dexScreenerScanLimiter = new RpcLimiter(1);
+
+// --- Budgets API pump.fun ---
+// Source prioritaire du market cap (le chiffre officiel affiché sur le site). Même découpage
+// que pour le RPC et DexScreener : les positions ouvertes passent avant le scan de candidats.
+export const pumpFunPositionLimiter = new RpcLimiter(4);
+export const pumpFunScanLimiter = new RpcLimiter(2);

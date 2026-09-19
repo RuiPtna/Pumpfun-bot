@@ -8,12 +8,20 @@ import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
 import { fetchDexScreenerData } from "./dexscreener";
 import { fetchBondingCurveMarketCap, fetchBondingCurveResult, deriveBondingCurvePda } from "./bondingCurve";
+import { fetchPumpFunCoin } from "./pumpfunApi";
 import { getSolPriceUsd } from "./priceFeed";
 import { getDynamicPriorityFeeSol } from "./priorityFee";
 import { fetchRugCheckSummary } from "./rugcheck";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
 import { checkMintAuthorities } from "./mintAuthority";
-import { rpcLimiter, positionRpcLimiter, dexScreenerPositionLimiter, dexScreenerScanLimiter } from "./rpcLimiter";
+import {
+  rpcLimiter,
+  positionRpcLimiter,
+  dexScreenerPositionLimiter,
+  dexScreenerScanLimiter,
+  pumpFunPositionLimiter,
+  pumpFunScanLimiter,
+} from "./rpcLimiter";
 import { escapeHtml } from "./htmlEscape";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
@@ -56,7 +64,7 @@ interface MarketCapReading {
   bondingCurveProgressPercent: number;
   /** D'où vient ce chiffre — rendu visible dans le message d'achat pour pouvoir diagnostiquer
    * immédiatement une entrée aberrante au lieu de deviner quelle source l'a produite. */
-  source: "bonding-curve" | "dexscreener";
+  source: "pump.fun" | "bonding-curve" | "dexscreener";
 }
 
 export class AutoTrader {
@@ -327,10 +335,27 @@ export class AutoTrader {
     const solPriceUsd = await getSolPriceUsd();
     const limiter = priority === "position" ? positionRpcLimiter : rpcLimiter;
 
-    // Si l'adresse de la bonding curve n'a pas été transmise par l'événement de détection
-    // (migration, copy-trading, événement incomplet), on la DÉRIVE du mint : c'est une PDA
-    // calculable. Ça rend tout token pré-migration lisible on-chain instantanément, au lieu de
-    // dépendre de DexScreener — sujet à limite de débit et à un délai d'indexation.
+    // SOURCE PRIORITAIRE : l'API pump.fun elle-même. C'est le chiffre affiché sur le site,
+    // sans aucune interprétation de notre part. Toutes les entrées aberrantes constatées
+    // venaient d'une autre source calculant sur une base différente.
+    const pfLimiter = priority === "position" ? pumpFunPositionLimiter : pumpFunScanLimiter;
+    const pf = await pfLimiter.run(() => fetchPumpFunCoin(mint));
+    if (pf && !pf.complete) {
+      return {
+        marketCapUsd: pf.marketCapUsd,
+        hasTradeCounts: false,
+        realSolReserves: pf.realSolReserves,
+        // Cette API ne publie pas la progression de courbe. On renvoie 100 (= non bloquant)
+        // plutôt que 0 : une donnée absente ne doit jamais faire rejeter un token, au même
+        // titre qu'un échec technique. Le filtre de progression reste évalué normalement
+        // quand la lecture on-chain est utilisée.
+        bondingCurveProgressPercent: 100,
+        source: "pump.fun",
+      };
+    }
+
+    // Repli n°1 : lecture on-chain de la bonding curve. L'adresse est dérivable du mint (PDA),
+    // donc disponible même si l'événement de détection ne l'a pas transmise.
     const curveKey = bondingCurveKey ?? deriveBondingCurvePda(mint);
 
     if (curveKey) {
@@ -357,6 +382,7 @@ export class AutoTrader {
       // la source légitime — on continue ci-dessous.
     }
 
+    // Repli n°2 : DexScreener, uniquement pour les tokens réellement gradués.
     const dexLimiter = priority === "position" ? dexScreenerPositionLimiter : dexScreenerScanLimiter;
     const dex = await dexLimiter.run(() => fetchDexScreenerData(mint));
     if (dex && dex.marketCapUsd > 0) {
