@@ -6,22 +6,13 @@ import { getRawTokenBalance } from "./jupiter";
 import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
-import { fetchDexScreenerData } from "./dexscreener";
-import { fetchBondingCurveMarketCap, fetchBondingCurveResult, deriveBondingCurvePda } from "./bondingCurve";
 import { fetchPumpFunCoin } from "./pumpfunApi";
 import { getSolPriceUsd } from "./priceFeed";
 import { getDynamicPriorityFeeSol } from "./priorityFee";
 import { fetchRugCheckSummary } from "./rugcheck";
 import { fetchHolderConcentration, fetchCreatorHoldingPercent } from "./holderAnalysis";
 import { checkMintAuthorities } from "./mintAuthority";
-import {
-  rpcLimiter,
-  positionRpcLimiter,
-  dexScreenerPositionLimiter,
-  dexScreenerScanLimiter,
-  pumpFunPositionLimiter,
-  pumpFunScanLimiter,
-} from "./rpcLimiter";
+import { rpcLimiter, positionRpcLimiter, pumpFunPositionLimiter, pumpFunScanLimiter } from "./rpcLimiter";
 import { escapeHtml } from "./htmlEscape";
 import { simulateBuy, simulateSell } from "./paperTrading";
 import {
@@ -327,81 +318,32 @@ export class AutoTrader {
   }
 
   /** Lit le market cap : priorité au compte on-chain de la bonding curve, sinon DexScreener après migration. */
+  /**
+   * Prix d'un token : SOURCE UNIQUE, l'API pump.fun. Le chiffre renvoyé est exactement celui
+   * affiché sur pump.fun, avant comme après migration.
+   *
+   * Aucun repli. Si l'API ne répond pas, on ne renvoie rien et on réessaie au cycle suivant.
+   * Les sources alternatives (lecture on-chain de la bonding curve, DexScreener) calculaient
+   * sur des bases différentes et ont produit tous les écarts constatés — un prix approximatif
+   * est pire que pas de prix du tout, puisqu'il déclenche de faux stop-loss et de faux TP.
+   */
   private async readMarketCap(
     mint: string,
-    bondingCurveKey: string | null,
+    _bondingCurveKey: string | null,
     priority: "watch" | "position" = "watch"
   ): Promise<MarketCapReading | null> {
-    const solPriceUsd = await getSolPriceUsd();
-    const limiter = priority === "position" ? positionRpcLimiter : rpcLimiter;
-
-    // SOURCE PRIORITAIRE : l'API pump.fun elle-même. C'est le chiffre affiché sur le site,
-    // sans aucune interprétation de notre part. Toutes les entrées aberrantes constatées
-    // venaient d'une autre source calculant sur une base différente.
     const pfLimiter = priority === "position" ? pumpFunPositionLimiter : pumpFunScanLimiter;
     const pf = await pfLimiter.run(() => fetchPumpFunCoin(mint));
-    // On utilise ce chiffre QUEL QUE SOIT l'état du token : pump.fun publie son market cap
-    // avant ET après graduation. L'écarter une fois le token gradué renvoyait inutilement
-    // vers DexScreener, qui calcule sur une autre base — c'est ce qui restait comme source
-    // d'écarts après le premier correctif.
-    if (pf) {
-      return {
-        marketCapUsd: pf.marketCapUsd,
-        // Un token gradué a des compteurs d'achats/ventes exploitables via DexScreener ;
-        // avant graduation, non. Ça ne change pas la source du PRIX, seulement le scoring.
-        hasTradeCounts: pf.complete,
-        realSolReserves: pf.realSolReserves,
-        // Cette API ne publie pas la progression de courbe. On renvoie 100 (= non bloquant)
-        // plutôt que 0 : une donnée absente ne doit jamais faire rejeter un token, au même
-        // titre qu'un échec technique. Le filtre de progression reste évalué normalement
-        // quand la lecture on-chain est utilisée.
-        bondingCurveProgressPercent: 100,
-        source: "pump.fun",
-      };
-    }
+    if (!pf) return null;
 
-    // Repli n°1 : lecture on-chain de la bonding curve. L'adresse est dérivable du mint (PDA),
-    // donc disponible même si l'événement de détection ne l'a pas transmise.
-    const curveKey = bondingCurveKey ?? deriveBondingCurvePda(mint);
-
-    if (curveKey) {
-      const result = await limiter.run(() => fetchBondingCurveResult(this.connection, curveKey, solPriceUsd));
-
-      if (result.status === "ok" && !result.snapshot.complete) {
-        return {
-          marketCapUsd: result.snapshot.marketCapUsd,
-          hasTradeCounts: false,
-          realSolReserves: result.snapshot.realSolReserves,
-          bondingCurveProgressPercent: result.snapshot.bondingCurveProgressPercent,
-          source: "bonding-curve",
-        };
-      }
-
-      // Échec TECHNIQUE (RPC, données illisibles) : le token est très probablement toujours
-      // pré-migration. Basculer sur DexScreener donnerait un market cap calculé sur une base
-      // différente de la bonding curve — c'est exactement ce qui produisait des entrées
-      // enregistrées à 100k+ sur des tokens réellement à ~3k. On préfère ne rien renvoyer et
-      // réessayer au cycle suivant plutôt que de trader sur une valeur incohérente.
-      if (result.status === "error") return null;
-
-      // status "not_found" ou snapshot.complete : le token a gradué, DexScreener est alors
-      // la source légitime — on continue ci-dessous.
-    }
-
-    // Repli n°2 : DexScreener, uniquement pour les tokens réellement gradués.
-    const dexLimiter = priority === "position" ? dexScreenerPositionLimiter : dexScreenerScanLimiter;
-    const dex = await dexLimiter.run(() => fetchDexScreenerData(mint));
-    if (dex && dex.marketCapUsd > 0) {
-      return {
-        marketCapUsd: dex.marketCapUsd,
-        hasTradeCounts: true,
-        realSolReserves: 0,
-        bondingCurveProgressPercent: 100,
-        source: "dexscreener",
-      };
-    }
-
-    return null;
+    return {
+      marketCapUsd: pf.marketCapUsd,
+      // Un token gradué a des compteurs d'achats/ventes exploitables pour le scoring.
+      hasTradeCounts: pf.complete,
+      realSolReserves: pf.realSolReserves,
+      bondingCurveProgressPercent: 100, // non publié par l'API — valeur non bloquante
+      source: "pump.fun",
+    };
   }
 
   private async evaluateWatch(mint: string): Promise<void> {
@@ -421,20 +363,13 @@ export class AutoTrader {
     const reading = await this.readMarketCap(mint, watch.bondingCurveKey);
     if (!reading) return; // pas encore de donnée exploitable, on réessaiera au prochain cycle
 
-    if (reading.hasTradeCounts) {
-      const dex = await dexScreenerScanLimiter.run(() => fetchDexScreenerData(mint));
-      if (dex) {
-        watch.lastLiquidityUsd = dex.liquidityUsd;
-        watch.lastBuys5m = dex.buys5m;
-        watch.lastSells5m = dex.sells5m;
-        // Le nom/symbole n'est pas toujours fourni par l'événement de détection (ex. migration) —
-        // on le complète dès qu'on a une réponse DexScreener, qui l'inclut systématiquement.
-        if (dex.name && watch.name === "?") watch.name = dex.name;
-        if (dex.symbol && watch.symbol === "?") watch.symbol = dex.symbol;
-        watch.hasImage = dex.hasImage;
-        watch.hasSocialPresence = dex.hasSocialPresence;
-        watch.lastPriceChange5mPercent = dex.priceChange5mPercent;
-        watch.lastPairAgeMinutes = dex.pairAgeMinutes;
+    // Nom/symbole complétés depuis pump.fun quand l'événement de détection ne les a pas fournis.
+    if (watch.name === "?" || watch.symbol === "?") {
+      const pf = await pumpFunScanLimiter.run(() => fetchPumpFunCoin(mint));
+      if (pf) {
+        if (pf.name && watch.name === "?") watch.name = pf.name;
+        if (pf.symbol && watch.symbol === "?") watch.symbol = pf.symbol;
+        if (pf.creator && !watch.creatorAddress) watch.creatorAddress = pf.creator;
       }
     }
 
@@ -1279,52 +1214,22 @@ export async function manualSellPosition(
  * pour garantir une valeur vraiment à jour au moment où l'utilisateur la demande, plutôt que
  * d'attendre le prochain passage du cycle automatique.
  */
-export async function refreshOpenPositionsPrices(telegramId: number, connection: Connection): Promise<{ updated: number; total: number }> {
+export async function refreshOpenPositionsPrices(telegramId: number, _connection: Connection): Promise<{ updated: number; total: number }> {
   const positions = getOpenPositions(telegramId);
-  const solPriceUsd = await getSolPriceUsd();
 
   const readOne = async (position: OpenPosition): Promise<boolean> => {
-    let marketCapUsd: number | null = null;
-
-    // Même priorité que readMarketCap : pump.fun d'abord (chiffre officiel du site), puis
-    // lecture on-chain, puis DexScreener uniquement pour un token réellement gradué.
+    // Source unique : pump.fun. Même règle que readMarketCap — pas de repli, on réessaie.
     const pf = await pumpFunPositionLimiter.run(() => fetchPumpFunCoin(position.mint));
-    if (pf) {
-      position.lastKnownMarketCapUsd = pf.marketCapUsd;
-      position.lastUpdatedAt = new Date().toISOString();
-      saveOpenPosition(position);
-      return true;
-    }
+    if (!pf) return false;
 
-    const curveKey = position.bondingCurveKey ?? deriveBondingCurvePda(position.mint);
-    let curveFailedTechnically = false;
-    if (curveKey) {
-      const result = await positionRpcLimiter.run(() => fetchBondingCurveResult(connection, curveKey, solPriceUsd));
-      if (result.status === "ok" && !result.snapshot.complete) {
-        marketCapUsd = result.snapshot.marketCapUsd;
-      } else if (result.status === "error") {
-        // Échec technique sur un token pré-migration : on ne bascule PAS sur DexScreener,
-        // dont le market cap repose sur une base différente. On marque l'échec et on réessaiera.
-        curveFailedTechnically = true;
-      }
-    }
-
-    if (marketCapUsd === null && !curveFailedTechnically) {
-      const dex = await dexScreenerPositionLimiter.run(() => fetchDexScreenerData(position.mint));
-      if (dex && dex.marketCapUsd > 0) marketCapUsd = dex.marketCapUsd;
-    }
-
-    if (marketCapUsd !== null) {
-      position.lastKnownMarketCapUsd = marketCapUsd;
-      position.lastUpdatedAt = new Date().toISOString();
-      saveOpenPosition(position);
-      return true;
-    }
-    return false;
+    position.lastKnownMarketCapUsd = pf.marketCapUsd;
+    position.lastUpdatedAt = new Date().toISOString();
+    saveOpenPosition(position);
+    return true;
   };
 
-  // Par petits groupes plutôt que tout d'un coup — envoyer 10 requêtes simultanées vers
-  // DexScreener peut déclencher une limite de débit qui n'apparaît jamais en séquentiel.
+
+  // Par petits groupes plutôt que tout d'un coup, pour ne pas saturer l'API.
   const BATCH_SIZE = 3;
   const succeeded = new Set<string>();
   for (let i = 0; i < positions.length; i += BATCH_SIZE) {
