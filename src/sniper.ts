@@ -842,7 +842,16 @@ export class AutoTrader {
       this.notify(
         `${BUY_FLAVOR_PHRASES[Math.floor(Math.random() * BUY_FLAVOR_PHRASES.length)]} — ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
           `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap${txLine}${buyFallbackNote}`,
-        { reply_markup: { inline_keyboard: [[{ text: "📈 Voir sur DexScreener", url: `https://dexscreener.com/solana/${mint}` }]] } }
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "📈 DexScreener", url: `https://dexscreener.com/solana/${mint}` },
+                { text: "💊 pump.fun", url: `https://pump.fun/coin/${mint}` },
+              ],
+            ],
+          },
+        }
       );
     } catch (err) {
       this.notify(`❌ Échec de l'entrée sur ${escapeHtml(symbol)} (${escapeHtml(name)})... : ${escapeHtml((err as Error).message)}`);
