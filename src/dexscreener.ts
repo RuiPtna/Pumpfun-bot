@@ -33,8 +33,20 @@ export async function fetchDexScreenerData(mint: string): Promise<DexScreenerSna
     const json = (await res.json()) as { pairs?: any[] };
     if (!json.pairs || json.pairs.length === 0) return null;
 
-    // S'il y a plusieurs paires (ex. bonding curve + migré), on prend celle avec le plus de liquidité
-    const pair = json.pairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best));
+    // CRITIQUE : l'API renvoie toutes les paires où le token apparaît — y compris celles où il
+    // est le token COTÉ (quote) et non le token principal (base). Dans ce cas, pair.marketCap,
+    // pair.priceUsd et pair.baseToken décrivent L'AUTRE token, pas le nôtre.
+    // Sans ce filtre, on lisait le market cap d'un token totalement différent (constaté :
+    // entrées à $151k ou $40k sur des tokens dont le vrai sommet était $4k et $5k).
+    // Le tri par liquidité aggravait encore le problème, puisque la paire de l'autre token
+    // — plus gros — est justement la plus liquide.
+    const ownPairs = json.pairs.filter(
+      (p) => typeof p.baseToken?.address === "string" && p.baseToken.address.toLowerCase() === mint.toLowerCase()
+    );
+    if (ownPairs.length === 0) return null;
+
+    // Parmi NOS paires uniquement, on prend la plus liquide (ex. bonding curve vs pool migré).
+    const pair = ownPairs.reduce((best, p) => ((p.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? p : best));
 
     return {
       marketCapUsd: pair.marketCap ?? pair.fdv ?? 0,
