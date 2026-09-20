@@ -510,6 +510,21 @@ export class AutoTrader {
     this.rejectWatch(mint, "fenêtre d'observation expirée sans setup validé", 0);
   }
 
+  /**
+   * Vide la liste des tokens en cours d'observation.
+   *
+   * Indispensable lors d'une réinitialisation : sans ça, les tokens hérités de la session
+   * précédente continuent d'être évalués puis rejetés, et viennent gonfler un compteur de
+   * rejets qui vient d'être remis à zéro — d'où des statistiques incohérentes du type
+   * "49 scannés / 510 rejetés".
+   */
+  clearWatches(): void {
+    this.evalIntervals.forEach((t) => clearInterval(t));
+    this.evalIntervals.clear();
+    this.watches.clear();
+    this.evaluatingMints.clear();
+  }
+
   private rejectWatch(mint: string, reason: string, score: number): void {
     const watch = this.watches.get(mint);
     if (watch) watch.decided = true;

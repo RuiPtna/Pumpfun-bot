@@ -563,8 +563,14 @@ function formatPnl(telegramId: number): string {
 
   const totalPnlUsd = withPnl.reduce((sum, { pnlUsd }) => sum + pnlUsd, 0);
 
+  // Horodatage à la seconde : sans lui, si aucun prix n'a bougé entre deux actualisations,
+  // Telegram refuse de modifier un message identique et l'écran semble figé — impossible de
+  // distinguer "les prix n'ont pas bougé" de "l'actualisation n'a pas marché".
+  const now = new Date().toLocaleTimeString("fr-FR");
+
   return [
     "📊 <b>PnL des positions ouvertes</b>",
+    `<i>actualisé à ${now} — source : pump.fun</i>`,
     "",
     lines.join("\n\n"),
     "",
@@ -844,6 +850,7 @@ async function formatDashboard(telegramId: number): Promise<string> {
 
   return [
     `📊 <b>DASHBOARD</b> — mode ${params.liveTrading ? "🔴 LIVE" : "📝 PAPER"}`,
+    `<i>actualisé à ${new Date().toLocaleTimeString("fr-FR")}</i>`,
     progressBar(totalPortfolioValue, startingReferenceUsd),
     "",
     `💰 <b>$${totalPortfolioValue.toFixed(2)}</b> (cash $${cashUsd.toFixed(2)} + positions $${openPositionsValueUsd.toFixed(2)})`,
@@ -886,6 +893,9 @@ function resetPaperData(telegramId: number): string {
   state.pausedUntil = null;
   state.tokensScanned = 0;
   state.tokensRejected = 0;
+  // Vide aussi les tokens encore en observation en mémoire : sinon ceux hérités de la session
+  // précédente continuent d'être rejetés et gonflent un compteur qui vient d'être remis à zéro.
+  autoTraderByUser.get(telegramId)?.clearWatches();
   // Sans ça, la référence de capital du jour resterait bloquée sur l'ancienne valeur d'avant le
   // reset — un capital qui semble alors avoir "perdu -100%" par rapport à cette référence
   // périmée, déclenchant la pause de perte quotidienne en boucle même avec un capital sain.
