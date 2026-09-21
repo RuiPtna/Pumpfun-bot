@@ -85,10 +85,10 @@ export const defaultParams: StrategyParams = {
   positionPercent: 30, // positions plus grosses : les frais fixes (priorité réseau) pèsent alors ~1,2% au lieu de 4,7%
   maxOpenPositions: 3, // moins de positions, mais assez grosses pour que les frais fixes ne les mangent pas
 
-  minAgeMinutes: 0, // "on achète tout" — aucune attente
+  minAgeMinutes: 5,
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 12 min compte désormais
-  minMarketCapUsd: 0, // "on achète tout" — aucun plancher
-  maxMarketCapUsd: 2000000000, // 2 milliards — pas un filtre de qualité, juste un garde-fou contre les lectures de données impossibles (aucun vrai memecoin n'atteint ce niveau)
+  minMarketCapUsd: 10000,
+  maxMarketCapUsd: 200000,
   minRealSolInvested: 0,
   maxCreatorHoldingPercent: 100,
   minCreatorInitialBuySol: 0,
@@ -105,11 +105,12 @@ export const defaultParams: StrategyParams = {
 
   stopLossPercent: -10,
   tp1Percent: 30,
-  tp1SellPercent: 70, // sécurise l'essentiel tôt : récupère ~91% de la mise dès +30%
+  tp1SellPercent: 100, // TP unique : chaque vente supplémentaire coûte un frais fixe complet, et le
+  // reliquat des paliers finissait presque toujours au stop à l'équilibre — une vente à perte après frais.
   tp2Percent: 60,
-  tp2SellPercent: 20,
+  tp2SellPercent: 0,
   tp3Percent: 120,
-  tp3SellPercent: 10, // le reliquat court, protégé par le stop à l'équilibre + le trailing stop
+  tp3SellPercent: 0,
   tp4Percent: 250,
   tp4SellPercent: 0, // paliers inutilisés : tout est vendu au plus tard à TP3
   tp5Percent: 500,
