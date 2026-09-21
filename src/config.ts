@@ -82,8 +82,8 @@ export interface StrategyParams {
 
 export const defaultParams: StrategyParams = {
   startingCapitalUsd: 20,
-  positionPercent: 8, // plus petit pour tenir beaucoup de positions en même temps sans épuiser le capital
-  maxOpenPositions: 10, // stratégie "achat en masse" — beaucoup de petites positions, viser +30% sur chacune
+  positionPercent: 30, // positions plus grosses : les frais fixes (priorité réseau) pèsent alors ~1,2% au lieu de 4,7%
+  maxOpenPositions: 3, // moins de positions, mais assez grosses pour que les frais fixes ne les mangent pas
 
   minAgeMinutes: 0, // "on achète tout" — aucune attente
   maxAgeMinutes: 525600, // pas de plafond réel (1 an) — seul le minimum de 12 min compte désormais

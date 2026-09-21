@@ -1094,7 +1094,19 @@ export class AutoTrader {
         timestamp: new Date().toISOString(),
       });
 
-      const pnlUsdForSlice = position.positionSizeUsd * (sellPercent / 100) * (gainPercent / 100);
+      // PnL NET, frais inclus. Auparavant on enregistrait le gain brut, alors que les frais
+      // étaient bien retirés du capital : le dashboard affichait donc un win rate et des
+      // moyennes calculés sur des gains qui n'existaient pas, et une stratégie "gagnante"
+      // pendant que le solde baissait. Les statistiques doivent refléter l'argent réel.
+      //   - frais de vente de cette tranche : 1% du montant reçu + frais de priorité fixe
+      //   - quote-part des frais d'achat, au prorata de la tranche vendue
+      const solPriceForFees = await getSolPriceUsd();
+      const priorityFeeUsd = this.params.priorityFeeSol * solPriceForFees;
+      const sliceCostUsd = position.positionSizeUsd * (sellPercent / 100);
+      const sliceProceedsUsd = sliceCostUsd * (1 + gainPercent / 100);
+      const sellFeesUsd = sliceProceedsUsd * 0.01 + priorityFeeUsd;
+      const buyFeesShareUsd = (position.positionSizeUsd * 0.01 + priorityFeeUsd) * (sellPercent / 100);
+      const pnlUsdForSlice = sliceProceedsUsd - sliceCostUsd - sellFeesUsd - buyFeesShareUsd;
       logClosedTrade({
         telegramId: this.telegramId,
         mint: position.mint,
