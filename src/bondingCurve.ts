@@ -156,3 +156,35 @@ export async function fetchBondingCurveMarketCap(
   const result = await fetchBondingCurveResult(connection, bondingCurveKey, solPriceUsd);
   return result.status === "ok" ? result.snapshot : null;
 }
+
+/** Position du flag is_mayhem_mode dans le compte BondingCurve (doc officielle pump.fun) :
+ * discriminateur (8) + 5 × u64 (40) + complete (1) + creator (32) = octet 81. */
+const MAYHEM_FLAG_OFFSET = 81;
+
+/**
+ * Indique si un token a été créé en mode Mayhem.
+ *
+ * En mode Mayhem, pump.fun frappe 1 milliard de tokens supplémentaires (offre doublée) qu'un
+ * agent IA trade de façon aléatoire pendant 24 h — la doc prévient qu'il peut vendre au point
+ * d'épuiser la courbe et d'empêcher les humains de revendre. Le flag est immuable et conservé
+ * après migration : le compte bonding curve reste lisible même pour un token gradué.
+ *
+ * Renvoie :
+ *   true  → mode Mayhem, à ne jamais acheter
+ *   false → token standard (y compris les comptes anciens de 81 octets, antérieurs au champ)
+ *   null  → vérification impossible (compte introuvable, erreur RPC)
+ */
+export async function fetchIsMayhemMode(connection: Connection, mint: string): Promise<boolean | null> {
+  const curveKey = deriveBondingCurvePda(mint);
+  if (!curveKey) return null;
+  try {
+    const info = await connection.getAccountInfo(new PublicKey(curveKey));
+    if (!info) return null;
+    // Compte antérieur à l'introduction du champ : créé via l'ancienne instruction `create`,
+    // pour laquelle le mode Mayhem est impossible par construction.
+    if (info.data.length <= MAYHEM_FLAG_OFFSET) return false;
+    return info.data[MAYHEM_FLAG_OFFSET] === 1;
+  } catch {
+    return null;
+  }
+}

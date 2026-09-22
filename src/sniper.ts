@@ -7,6 +7,7 @@ import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
 import { fetchPumpFunCoin } from "./pumpfunApi";
+import { fetchIsMayhemMode } from "./bondingCurve";
 import { getSolPriceUsd } from "./priceFeed";
 import { getDynamicPriorityFeeSol } from "./priorityFee";
 import { fetchRugCheckSummary } from "./rugcheck";
@@ -396,6 +397,19 @@ export class AutoTrader {
     // au fil des cycles d'évaluation (sauf la concentration du créateur, qui reste vérifiée
     // ici en une passe — un compromis raisonnable plutôt que de la revérifier toutes les 20s).
     if (!watch.qualityChecked) {
+      // Mode Mayhem : exclusion absolue, vérifiée en premier. On refuse aussi quand la
+      // vérification est impossible — sur ce point précis, ne pas acheter vaut mieux que
+      // risquer un token dont l'offre est doublée et qu'un agent IA peut vider.
+      const mayhem = await rpcLimiter.run(() => fetchIsMayhemMode(this.connection, mint));
+      if (mayhem !== false) {
+        this.rejectWatch(
+          mint,
+          mayhem === true ? "mode Mayhem activé" : "mode Mayhem impossible à vérifier",
+          0
+        );
+        return;
+      }
+
       // Désactivé : "on achète tout, point barre" — même le blocage anti-récidive (créateur qui
       // a déjà causé une perte) ne s'applique plus, pour rester cohérent avec ce choix explicite.
       // if (watch.creatorAddress && isBlacklistedCreator(this.telegramId, watch.creatorAddress)) {
@@ -527,7 +541,12 @@ export class AutoTrader {
 
   private rejectWatch(mint: string, reason: string, score: number): void {
     const watch = this.watches.get(mint);
-    if (watch) watch.decided = true;
+    // Si le token n'est plus en observation, il a déjà été rejeté par un autre chemin
+    // d'évaluation concurrent : on ignore ce doublon. Sans cette garde, un même token pouvait
+    // être compté plusieurs fois, d'où "Rejetés" supérieur à "Scannés" — impossible par
+    // construction, puisque chaque token scanné ne peut être rejeté qu'une seule fois.
+    if (!watch) return;
+    watch.decided = true;
 
     const interval = this.evalIntervals.get(mint);
     if (interval) clearInterval(interval);
@@ -549,6 +568,10 @@ export class AutoTrader {
    */
   private async directCopyBuy(mint: string, name: string, symbol: string, walletLabel: string): Promise<void> {
     if (getOpenPositions(this.telegramId).some((p) => p.mint === mint)) return; // déjà détenu
+
+    // Le copy-trading n'applique volontairement aucun filtre — sauf celui-ci, absolu.
+    const mayhem = await rpcLimiter.run(() => fetchIsMayhemMode(this.connection, mint));
+    if (mayhem !== false) return;
 
     const openPositions = getOpenPositions(this.telegramId);
     if (openPositions.length >= this.params.maxOpenPositions) return; // pas de slot libre

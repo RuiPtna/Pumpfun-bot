@@ -625,6 +625,8 @@ function categorizeRejectionReason(reason: string): string {
     ["aucune image ni lien social", "🖼️ Pas d'image/réseaux sociaux"],
     ["paire de trading trop ancienne", "🏛️ Produit déjà établi (pas un memecoin frais)"],
     ["RugCheck", "🛡️ RugCheck — risque élevé"],
+    ["mode Mayhem impossible", "🌀 Mayhem non vérifiable"],
+    ["mode Mayhem activé", "🌀 Mode Mayhem"],
     ["plus gros holder détient", "🐋 Plus gros holder trop concentré"],
     ["top 10 holders détiennent", "🐋 Top 10 holders trop concentrés"],
     ["fenêtre d'observation expirée", "⏱️ Expiré sans setup validé"],
