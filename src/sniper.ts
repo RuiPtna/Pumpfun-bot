@@ -5,9 +5,10 @@ import { connectMultiPlatformFeed } from "./multiPlatformFeed";
 import { getRawTokenBalance } from "./jupiter";
 import { sellWithFallback } from "./sellWithFallback";
 import { StrategyParams } from "./config";
-import { TokenWatch, createTokenWatch, scoreToken, passesHardFilters } from "./scoring";
+import { TokenWatch, createTokenWatch, passesHardFilters } from "./scoring";
 import { fetchPumpFunCoin } from "./pumpfunApi";
 import { fetchIsMayhemMode } from "./bondingCurve";
+import { fetchTradeFlow } from "./tradeFlow";
 import { getSolPriceUsd } from "./priceFeed";
 import { getDynamicPriorityFeeSol } from "./priorityFee";
 import { fetchRugCheckSummary } from "./rugcheck";
@@ -501,8 +502,46 @@ export class AutoTrader {
       watch.qualityChecked = true;
     }
 
-    const score = scoreToken(watch, reading.marketCapUsd, reading.hasTradeCounts);
-    if (score.total < this.params.minEntryScore) return;
+
+    // FILTRE D'ENTRÉE PRINCIPAL — évalué ici, à l'instant de la décision, et non une seule fois
+    // par token : la pression acheteuse change en permanence, seule celle du moment compte.
+    //
+    // Sans lui, le bot achetait sans savoir si quelqu'un achetait ou vendait. Avec un TP à +30%
+    // et un stop à -10%, un token au prix aléatoire touche le TP ~27% du temps ; un taux de
+    // réussite inférieur signifie qu'on entrait sur des tokens déjà en train de descendre.
+    //
+    // Échec technique (API muette) : on NE bloque PAS l'achat, comme partout ailleurs.
+    const needsFlowCheck =
+      this.params.minBuyRatioPercent > 0 || this.params.minNetSolFlow > 0 || this.params.minUniqueBuyers > 0;
+    if (needsFlowCheck) {
+      const flow = await pumpFunScanLimiter.run(() => fetchTradeFlow(mint));
+      if (flow) {
+        if (flow.buyRatioPercent < this.params.minBuyRatioPercent) {
+          this.rejectWatch(
+            mint,
+            `plus de vendeurs que d'acheteurs (${flow.buyRatioPercent.toFixed(0)}% d'achats, min ${this.params.minBuyRatioPercent}%)`,
+            0
+          );
+          return;
+        }
+        if (flow.netSolFlow < this.params.minNetSolFlow) {
+          this.rejectWatch(
+            mint,
+            `flux SOL net insuffisant (${flow.netSolFlow.toFixed(2)} SOL, min ${this.params.minNetSolFlow})`,
+            0
+          );
+          return;
+        }
+        if (flow.uniqueBuyers < this.params.minUniqueBuyers) {
+          this.rejectWatch(
+            mint,
+            `trop peu d'acheteurs distincts (${flow.uniqueBuyers}, min ${this.params.minUniqueBuyers})`,
+            0
+          );
+          return;
+        }
+      }
+    }
 
     await this.tryEnter(
       mint,
@@ -512,7 +551,6 @@ export class AutoTrader {
       watch.creatorAddress,
       watch.creatorInitialBuySol,
       reading.marketCapUsd,
-      score.total,
       reading.hasTradeCounts,
       watch.platform === "other" ? "multiplatform" : "pumpfun"
     );
@@ -664,7 +702,6 @@ export class AutoTrader {
     creatorAddress: string | null,
     creatorInitialBuySol: number,
     marketCapUsd: number,
-    score: number,
     hasTradeCounts: boolean,
     source: "pumpfun" | "multiplatform" = "pumpfun"
   ): Promise<void> {
@@ -699,25 +736,18 @@ export class AutoTrader {
       : state.paperCapitalUsd;
     const dailyPnlPercent = ((currentCapitalUsd - state.dailyStartCapitalUsd) / state.dailyStartCapitalUsd) * 100;
     if (dailyPnlPercent <= -this.params.maxDailyLossPercent) {
-      this.rejectWatch(mint, "limite de perte quotidienne atteinte — trading en pause pour aujourd'hui", score);
+      this.rejectWatch(mint, "limite de perte quotidienne atteinte — trading en pause pour aujourd'hui", 0);
       return;
     }
 
     if (this.params.pauseFeatureEnabled && state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
-      // Le contournement exceptionnel n'est autorisé que pour des tokens ayant de vraies données
-      // de trading (post-migration) — un score élevé calculé sur la seule bonding curve (2 critères
-      // sur 4, sans preuve d'activité réelle) n'est pas une preuve suffisante pour lever une pause.
-      if (score < this.params.minScoreAfterPause || !hasTradeCounts) {
-        this.rejectWatch(mint, `bot en pause après pertes consécutives (jusqu'à ${state.pausedUntil})`, score);
-        return;
-      }
-      this.notify(`⚡ Score exceptionnel (${score}/100, données réelles confirmées) pendant la pause — entrée exceptionnelle autorisée`);
+      this.rejectWatch(mint, `bot en pause après pertes consécutives (jusqu'à ${state.pausedUntil})`, 0);
+      return;
     }
 
     const openPositions = getOpenPositions(this.telegramId);
-    const isPerfectScore = score >= 100 && hasTradeCounts;
-    if (openPositions.length >= this.params.maxOpenPositions && !isPerfectScore) {
-      this.rejectWatch(mint, "nombre maximum de positions déjà atteint", score);
+    if (openPositions.length >= this.params.maxOpenPositions) {
+      this.rejectWatch(mint, "nombre maximum de positions déjà atteint", 0);
       return;
     }
     if (isPerfectScore && openPositions.length >= this.params.maxOpenPositions) {
@@ -735,7 +765,7 @@ export class AutoTrader {
           this.rejectWatch(
             mint,
             `plus gros holder détient ${holderData.topHolderPercent.toFixed(0)}% (max ${this.params.maxTopHolderPercent}%)`,
-            score
+            0
           );
           return;
         }
@@ -743,7 +773,7 @@ export class AutoTrader {
           this.rejectWatch(
             mint,
             `top 10 holders détiennent ${holderData.top10Percent.toFixed(0)}% (max ${this.params.maxTop10HolderPercent}%)`,
-            score
+            0
           );
           return;
         }
@@ -762,7 +792,7 @@ export class AutoTrader {
     // systématique ; on se fie alors à la lecture précédente qui a mené à cette décision.
     const lastCheckReading = await this.readMarketCap(mint, bondingCurveKey, "position");
     if (lastCheckReading && (lastCheckReading.marketCapUsd < this.params.minMarketCapUsd || lastCheckReading.marketCapUsd > this.params.maxMarketCapUsd)) {
-      this.rejectWatch(mint, `market cap sorti de la fourchette juste avant l'achat ($${lastCheckReading.marketCapUsd.toFixed(0)})`, score);
+      this.rejectWatch(mint, `market cap sorti de la fourchette juste avant l'achat ($${lastCheckReading.marketCapUsd.toFixed(0)})`, 0);
       return;
     }
 
@@ -775,7 +805,7 @@ export class AutoTrader {
         const balanceLamports = await rpcLimiter.run(() => this.connection.getBalance(this.signer.publicKey));
         const balanceSol = balanceLamports / 1_000_000_000;
         if (balanceSol - positionSizeSol - this.params.priorityFeeSol - 0.001 < this.params.reserveSolBalance) {
-          this.rejectWatch(mint, "solde insuffisant pour garder la réserve de sécurité", score);
+          this.rejectWatch(mint, "solde insuffisant pour garder la réserve de sécurité", 0);
           return;
         }
 
@@ -877,7 +907,7 @@ export class AutoTrader {
       const txLine = this.params.liveTrading ? `\n<a href="https://solscan.io/tx/${signature}">Voir la transaction</a>` : "";
       this.notify(
         `${BUY_FLAVOR_PHRASES[Math.floor(Math.random() * BUY_FLAVOR_PHRASES.length)]} — ${modeTag} — Position ouverte sur <b>${escapeHtml(symbol)}</b> (${escapeHtml(name)}) <code>${mint.slice(0, 6)}...</code>\n` +
-          `Score <b>${score}/100</b> — ${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap\n` +
+          `${amountLine} — entrée à <b>$${entryMarketCapUsd.toFixed(0)}</b> de market cap\n` +
           `<i>source prix : ${entrySource}</i>${txLine}${buyFallbackNote}`,
         {
           reply_markup: {

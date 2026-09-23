@@ -28,6 +28,16 @@ export interface StrategyParams {
   requireRevokedAuthorities: boolean;
   /** Rejette les tokens sans image ET sans aucun lien social/site web (signal de lancement bâclé) */
   requireTokenMetadata: boolean;
+  /** Part minimale d'ACHATS dans les transactions récentes, en % (50 = équilibre).
+   * Le filtre d'entrée principal : n'acheter que ce qui est en train d'être acheté.
+   * 0 = désactivé. */
+  minBuyRatioPercent: number;
+  /** SOL net minimum entré sur la fenêtre récente (achats − ventes). Filtre le volume réel,
+   * pas seulement le nombre de transactions. 0 = désactivé. */
+  minNetSolFlow: number;
+  /** Nombre minimum d'acheteurs DISTINCTS — un seul gros acheteur n'est pas une demande.
+   * 0 = désactivé. */
+  minUniqueBuyers: number;
   /** Score de risque RugCheck maximum accepté (0–100, plus haut = plus risqué).
    * 0 = filtre désactivé. Un token signalé comme déjà "rugged" est rejeté quel que soit ce seuil. */
   maxRugcheckRiskScore: number;
@@ -43,7 +53,6 @@ export interface StrategyParams {
   maxTop10HolderPercent: number;
 
   // Scoring
-  minEntryScore: number; // sur 100
 
   // Sortie
   stopLossPercent: number; // ex. -18
@@ -66,7 +75,6 @@ export interface StrategyParams {
   maxDailyLossPercent: number;
   consecutiveLossesForPause: number;
   pauseDurationMinutes: number;
-  minScoreAfterPause: number;
   /** Interrupteur général : si false, aucune pause automatique n'est déclenchée, quel que soit le nombre de pertes */
   pauseFeatureEnabled: boolean;
 
@@ -95,13 +103,15 @@ export const defaultParams: StrategyParams = {
   minBondingCurveProgressPercent: 0,
   requireRevokedAuthorities: false, // "on achète tout" — plus aucun filtre anti-rug, choix assumé
   requireTokenMetadata: false,
+  minBuyRatioPercent: 60, // nettement plus d'acheteurs que de vendeurs au moment de l'entrée
+  minNetSolFlow: 0.3, // du vrai SOL qui entre, pas juste de l'agitation
+  minUniqueBuyers: 3, // plusieurs acheteurs distincts, pas un seul portefeuille
   maxRugcheckRiskScore: 0, // désactivé par défaut — cohérent avec "on achète tout"
   maxRecent5mDropPercent: -100, // "on achète tout" — ne bloque jamais
   enableMultiPlatform: false, // pump.fun uniquement — les autres plateformes apportaient surtout du bruit
   maxTopHolderPercent: 100,
   maxTop10HolderPercent: 100,
 
-  minEntryScore: 0, // "on achète tout" — le score n'exclut plus rien
 
   stopLossPercent: -10,
   tp1Percent: 30,
@@ -121,7 +131,6 @@ export const defaultParams: StrategyParams = {
   maxDailyLossPercent: 100, // "on achète tout" — désactivé en pratique (100% = ne se déclenche jamais)
   consecutiveLossesForPause: 3,
   pauseDurationMinutes: 30,
-  minScoreAfterPause: 80,
   pauseFeatureEnabled: false,
 
   maxSlippagePercent: 25,
@@ -147,7 +156,6 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "minBondingCurveProgressPercent",
   "maxTopHolderPercent",
   "maxTop10HolderPercent",
-  "minEntryScore",
   "stopLossPercent",
   "tp1Percent",
   "tp1SellPercent",
@@ -164,10 +172,12 @@ export const numericParamKeys: (keyof StrategyParams)[] = [
   "maxDailyLossPercent",
   "consecutiveLossesForPause",
   "pauseDurationMinutes",
-  "minScoreAfterPause",
   "maxSlippagePercent",
   "maxRecent5mDropPercent",
   "maxRugcheckRiskScore",
+  "minBuyRatioPercent",
+  "minNetSolFlow",
+  "minUniqueBuyers",
   "priorityFeeSol",
   "reserveSolBalance",
 ];
