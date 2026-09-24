@@ -750,10 +750,6 @@ export class AutoTrader {
       this.rejectWatch(mint, "nombre maximum de positions déjà atteint", 0);
       return;
     }
-    if (isPerfectScore && openPositions.length >= this.params.maxOpenPositions) {
-      this.notify(`🌟 Score parfait (100/100, données réelles) sur ${symbol} — entrée au-delà de la limite de positions habituelle`);
-    }
-
     // Vérification de la concentration des holders — uniquement pertinente APRÈS migration.
     // Tant que le token est sur la bonding curve, celle-ci détient elle-même la grande majorité
     // de la supply (c'est le mécanisme même de la curve, pas un signal de rug) : appliquer ce
