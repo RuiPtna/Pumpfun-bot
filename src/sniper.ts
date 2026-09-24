@@ -943,36 +943,46 @@ export class AutoTrader {
     this.isPollingPositions = true;
     try {
       const positions = getOpenPositions(this.telegramId);
-      for (const position of positions) {
-        const marketCapUsd = await this.readPositionMarketCapUsd(position);
-        if (marketCapUsd === null) {
-          // Aucune lecture possible depuis un moment (compte introuvable, token mort, RPC en
-          // échec) — sans ça, la position resterait bloquée indéfiniment, puisque la sortie ne
-          // se déclenche normalement qu'après une lecture réussie. Passé un certain délai sans
-          // aucune donnée, on clôture de force sur la dernière valeur connue plutôt que de la
-          // laisser pendre éternellement.
-          const minutesSinceLastUpdate = (Date.now() - new Date(position.lastUpdatedAt).getTime()) / 60000;
-          if (minutesSinceLastUpdate >= 10) {
-            const gainPercent =
-              position.entryMarketCapUsd > 0
-                ? ((position.lastKnownMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100
-                : 0;
-            await this.exitPosition(
-              position,
-              position.remainingPercent,
-              gainPercent,
-              "🪦 <b>Position abandonnée</b> (aucune donnée de prix depuis 10+ min — token probablement mort)",
-              true
-            );
-          }
-          continue;
-        }
-        await this.updatePositionAndCheckExit(position, marketCapUsd);
-      }
+
+      // EN PARALLÈLE, impérativement. En séquentiel, chaque position attendait l'appel API de
+      // la précédente (~400 ms chacun) — et si l'une déclenchait une vente, les autres
+      // attendaient la fin complète de cette vente avant d'être seulement regardées. Avec le
+      // verrou qui saute les cycles pendant ce temps, l'intervalle réel montait à 1,5-2 s au
+      // lieu de 1 s : assez pour qu'un stop à -10% ne soit vu qu'à -15%, ce qui était mesuré
+      // sur les trades réels. Chaque position est indépendante, rien ne justifiait la file.
+      await Promise.all(positions.map((position) => this.checkOnePosition(position)));
     } finally {
       this.isPollingPositions = false;
     }
   }
+
+  private async checkOnePosition(position: OpenPosition): Promise<void> {
+    const marketCapUsd = await this.readPositionMarketCapUsd(position);
+
+    if (marketCapUsd === null) {
+      // Aucune lecture possible depuis un moment (token mort, API en échec) — sans ça, la
+      // position resterait bloquée indéfiniment, puisque la sortie ne se déclenche qu'après
+      // une lecture réussie. On clôture alors sur la dernière valeur connue.
+      const minutesSinceLastUpdate = (Date.now() - new Date(position.lastUpdatedAt).getTime()) / 60000;
+      if (minutesSinceLastUpdate >= 10) {
+        const gainPercent =
+          position.entryMarketCapUsd > 0
+            ? ((position.lastKnownMarketCapUsd - position.entryMarketCapUsd) / position.entryMarketCapUsd) * 100
+            : 0;
+        await this.exitPosition(
+          position,
+          position.remainingPercent,
+          gainPercent,
+          "🪦 <b>Position abandonnée</b> (aucune donnée de prix depuis 10+ min — token probablement mort)",
+          true
+        );
+      }
+      return;
+    }
+
+    await this.updatePositionAndCheckExit(position, marketCapUsd);
+  }
+
 
   private async updatePositionAndCheckExit(position: OpenPosition, currentMarketCapUsd: number): Promise<void> {
     if (position.entryMarketCapUsd <= 0) return;
