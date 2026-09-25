@@ -51,6 +51,8 @@ export interface OpenPosition {
   /** D'où vient ce token : détection pump.fun native, flux multi-plateformes, ou copy-trading.
    * Permet de comparer la performance réelle de chaque source plutôt que de la deviner. */
   source?: "pumpfun" | "multiplatform" | "copytrade";
+  /** Conditions mesurées à l'achat, transportées jusqu'à la clôture pour l'analyse. */
+  entryFeatures?: ClosedTrade["entryFeatures"];
   openedAt: string;
 }
 
@@ -73,6 +75,18 @@ export interface ClosedTrade {
   wasPaper: boolean;
   /** Source du token — permet le comparatif de performance par origine dans le dashboard. */
   source?: "pumpfun" | "multiplatform" | "copytrade";
+  /** Conditions mesurées AU MOMENT DE L'ACHAT. Sans elles, l'historique ne dit que le
+   * résultat, jamais pourquoi — impossible de distinguer ce qui sépare un gagnant d'un
+   * perdant, et donc de régler le bot autrement qu'en devinant. */
+  entryFeatures?: {
+    marketCapUsd: number;
+    ageMinutes: number;
+    buyRatioPercent: number | null;
+    netSolFlow: number | null;
+    uniqueBuyers: number | null;
+    /** Heure locale d'entrée (0-23) — le marché n'a pas le même comportement la nuit. */
+    hourOfDay: number;
+  };
   closedAt: string;
 }
 

@@ -511,10 +511,12 @@ export class AutoTrader {
     // réussite inférieur signifie qu'on entrait sur des tokens déjà en train de descendre.
     //
     // Échec technique (API muette) : on NE bloque PAS l'achat, comme partout ailleurs.
+    // Le flux est TOUJOURS mesuré, même si les seuils sont désactivés : il est enregistré avec
+    // le trade pour permettre l'analyse a posteriori de ce qui sépare gagnants et perdants.
+    const flow = await pumpFunScanLimiter.run(() => fetchTradeFlow(mint));
     const needsFlowCheck =
       this.params.minBuyRatioPercent > 0 || this.params.minNetSolFlow > 0 || this.params.minUniqueBuyers > 0;
     if (needsFlowCheck) {
-      const flow = await pumpFunScanLimiter.run(() => fetchTradeFlow(mint));
       if (flow) {
         if (flow.buyRatioPercent < this.params.minBuyRatioPercent) {
           this.rejectWatch(
@@ -552,7 +554,15 @@ export class AutoTrader {
       watch.creatorInitialBuySol,
       reading.marketCapUsd,
       reading.hasTradeCounts,
-      watch.platform === "other" ? "multiplatform" : "pumpfun"
+      watch.platform === "other" ? "multiplatform" : "pumpfun",
+      {
+        marketCapUsd: reading.marketCapUsd,
+        ageMinutes: (Date.now() - watch.createdAt) / 60000,
+        buyRatioPercent: flow?.buyRatioPercent ?? null,
+        netSolFlow: flow?.netSolFlow ?? null,
+        uniqueBuyers: flow?.uniqueBuyers ?? null,
+        hourOfDay: new Date().getHours(),
+      }
     );
   }
 
@@ -703,7 +713,8 @@ export class AutoTrader {
     creatorInitialBuySol: number,
     marketCapUsd: number,
     hasTradeCounts: boolean,
-    source: "pumpfun" | "multiplatform" = "pumpfun"
+    source: "pumpfun" | "multiplatform" = "pumpfun",
+    entryFeatures?: OpenPosition["entryFeatures"]
   ): Promise<void> {
     // Garde-fou n°2 (défense en profondeur) : ne jamais acheter un token pour lequel une
     // position est déjà ouverte — l'écraser effacerait sa progression réelle (paliers déjà
@@ -876,6 +887,7 @@ export class AutoTrader {
         remainingPercent: 100,
         takeProfitLevelsHit: [],
         source,
+        entryFeatures,
         openedAt: new Date().toISOString(),
       };
       saveOpenPosition(position);
@@ -1176,6 +1188,7 @@ export class AutoTrader {
         pnlPercent: gainPercent,
         wasPaper: !this.params.liveTrading,
         source: position.source,
+        entryFeatures: position.entryFeatures,
         closedAt: new Date().toISOString(),
       });
 

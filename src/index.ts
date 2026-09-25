@@ -970,6 +970,67 @@ bot.command("dashboard", async (ctx) => {
   ctx.reply(await formatDashboard(ctx.from.id), { parse_mode: "HTML", ...dashboardKeyboard() });
 });
 
+bot.command("analyse", (ctx) => {
+  const telegramId = ctx.from.id;
+  const params = getParams(telegramId);
+  const trades = getClosedTrades(telegramId)
+    .filter((t) => t.wasPaper === !params.liveTrading)
+    .filter((t) => t.entryFeatures);
+
+  if (trades.length < 20) {
+    ctx.reply(
+      `Il faut au moins 20 trades avec conditions d'entrée enregistrées pour une analyse utile (actuellement ${trades.length}).\n\n` +
+        "Les trades antérieurs à cette fonctionnalité n'ont pas ces données — laisse tourner."
+    );
+    return;
+  }
+
+  const wins = trades.filter((t) => t.pnlUsd > 0);
+  const losses = trades.filter((t) => t.pnlUsd <= 0);
+
+  // Compare la valeur moyenne d'un critère chez les gagnants vs les perdants. Un écart net
+  // signale un critère qui sépare réellement les deux — donc un réglage à exploiter.
+  const compare = (
+    label: string,
+    pick: (t: (typeof trades)[number]) => number | null | undefined,
+    unit = ""
+  ): string | null => {
+    const w = wins.map(pick).filter((v): v is number => typeof v === "number");
+    const l = losses.map(pick).filter((v): v is number => typeof v === "number");
+    if (w.length < 5 || l.length < 5) return null;
+    const avg = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
+    const aw = avg(w);
+    const al = avg(l);
+    const diffPercent = al !== 0 ? ((aw - al) / Math.abs(al)) * 100 : 0;
+    const marker = Math.abs(diffPercent) >= 20 ? " ⬅️" : "";
+    return `${label}\n   gagnants ${aw.toFixed(1)}${unit} · perdants ${al.toFixed(1)}${unit}${marker}`;
+  };
+
+  const rows = [
+    compare("Market cap à l'entrée", (t) => t.entryFeatures?.marketCapUsd, "$"),
+    compare("Âge du token", (t) => t.entryFeatures?.ageMinutes, " min"),
+    compare("% d'achats", (t) => t.entryFeatures?.buyRatioPercent, "%"),
+    compare("SOL net entrant", (t) => t.entryFeatures?.netSolFlow, " SOL"),
+    compare("Acheteurs distincts", (t) => t.entryFeatures?.uniqueBuyers),
+    compare("Heure d'entrée", (t) => t.entryFeatures?.hourOfDay, "h"),
+  ].filter((r): r is string => r !== null);
+
+  const winRate = (wins.length / trades.length) * 100;
+
+  ctx.reply(
+    [
+      `🔬 <b>Analyse sur ${trades.length} trades</b>`,
+      `${wins.length} gagnants · ${losses.length} perdants — ${winRate.toFixed(0)}%`,
+      "",
+      ...rows,
+      "",
+      "⬅️ = écart supérieur à 20% entre gagnants et perdants : critère qui sépare réellement les deux.",
+      "Sans aucun marqueur, aucun critère mesuré ne distingue les gagnants — le réglage actuel n'a pas d'avantage exploitable.",
+    ].join("\n"),
+    { parse_mode: "HTML" }
+  );
+});
+
 bot.command("chart", async (ctx) => {
   await sendPortfolioChart(ctx, ctx.from.id);
 });
@@ -1195,6 +1256,7 @@ async function startBot(): Promise<void> {
     { command: "autotrade", description: "Activer/désactiver le bot" },
     { command: "dashboard", description: "Statistiques en temps réel" },
     { command: "chart", description: "Graphique de l'évolution du portefeuille" },
+    { command: "analyse", description: "Ce qui sépare les trades gagnants des perdants" },
     { command: "pnl", description: "PnL des positions ouvertes" },
     { command: "openpositions", description: "Positions actuellement ouvertes" },
     { command: "history", description: "Historique des trades clôturés" },
