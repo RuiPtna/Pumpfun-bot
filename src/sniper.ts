@@ -8,7 +8,6 @@ import { StrategyParams } from "./config";
 import { TokenWatch, createTokenWatch, passesHardFilters } from "./scoring";
 import { fetchPumpFunCoin } from "./pumpfunApi";
 import { fetchIsMayhemMode } from "./bondingCurve";
-import { fetchTradeFlow } from "./tradeFlow";
 import { getSolPriceUsd } from "./priceFeed";
 import { getDynamicPriorityFeeSol } from "./priorityFee";
 import { fetchRugCheckSummary } from "./rugcheck";
@@ -186,6 +185,22 @@ export class AutoTrader {
       }
     }
 
+    // Transaction sur un token en cours d'observation : on accumule le flux acheteur/vendeur.
+    if (data.mint && (data.txType === "buy" || data.txType === "sell")) {
+      const watch = this.watches.get(data.mint);
+      if (watch) {
+        const sol = typeof data.solAmount === "number" ? data.solAmount : 0;
+        if (data.txType === "buy") {
+          watch.flowBuys += 1;
+          watch.flowSolIn += sol;
+          if (typeof data.traderPublicKey === "string") watch.flowBuyers.add(data.traderPublicKey);
+        } else {
+          watch.flowSells += 1;
+          watch.flowSolOut += sol;
+        }
+      }
+    }
+
     // Signal de réveil temps réel pour une position déjà ouverte — vérifié en priorité, avant
     // toute autre interprétation du message.
     if (data.mint && this.subscribedPositionMints.has(data.mint)) {
@@ -304,6 +319,10 @@ export class AutoTrader {
       poolHint
     );
     this.watches.set(mint, watch);
+    // Abonnement aux transactions du token : chaque achat/vente sera poussé par le WebSocket
+    // et accumulé dans le watch (voir handleMessage). C'est le même mécanisme que pour les
+    // positions ouvertes — aucune API à interroger, aucune limite de débit.
+    this.ws?.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
 
     const interval = setInterval(() => this.evaluateWatch(mint), WATCH_POLL_INTERVAL_MS);
     this.evalIntervals.set(mint, interval);
@@ -513,7 +532,15 @@ export class AutoTrader {
     // Échec technique (API muette) : on NE bloque PAS l'achat, comme partout ailleurs.
     // Le flux est TOUJOURS mesuré, même si les seuils sont désactivés : il est enregistré avec
     // le trade pour permettre l'analyse a posteriori de ce qui sépare gagnants et perdants.
-    const flow = await pumpFunScanLimiter.run(() => fetchTradeFlow(mint));
+    const totalFlow = watch.flowBuys + watch.flowSells;
+    const flow =
+      totalFlow > 0
+        ? {
+            buyRatioPercent: (watch.flowBuys / totalFlow) * 100,
+            netSolFlow: watch.flowSolIn - watch.flowSolOut,
+            uniqueBuyers: watch.flowBuyers.size,
+          }
+        : null;
     const needsFlowCheck =
       this.params.minBuyRatioPercent > 0 || this.params.minNetSolFlow > 0 || this.params.minUniqueBuyers > 0;
     if (needsFlowCheck) {
@@ -583,12 +610,15 @@ export class AutoTrader {
   clearWatches(): void {
     this.evalIntervals.forEach((t) => clearInterval(t));
     this.evalIntervals.clear();
+    const mints = [...this.watches.keys()];
+    if (mints.length > 0) this.ws?.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: mints }));
     this.watches.clear();
     this.evaluatingMints.clear();
   }
 
   private rejectWatch(mint: string, reason: string, score: number): void {
     const watch = this.watches.get(mint);
+    if (watch) this.ws?.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [mint] }));
     // Si le token n'est plus en observation, il a déjà été rejeté par un autre chemin
     // d'évaluation concurrent : on ignore ce doublon. Sans cette garde, un même token pouvait
     // être compté plusieurs fois, d'où "Rejetés" supérieur à "Scannés" — impossible par
@@ -684,6 +714,10 @@ export class AutoTrader {
         openedAt: new Date().toISOString(),
       };
       saveOpenPosition(position);
+      // Le token passe de "candidat observé" à "position ouverte" : l'accumulation de flux
+      // n'a plus lieu d'être, mais l'abonnement aux transactions reste — il sert désormais à
+      // déclencher les vérifications de sortie en temps réel.
+      this.watches.delete(mint);
       this.subscribeToPositionTrades(mint);
 
       logTrade({
@@ -891,6 +925,10 @@ export class AutoTrader {
         openedAt: new Date().toISOString(),
       };
       saveOpenPosition(position);
+      // Le token passe de "candidat observé" à "position ouverte" : l'accumulation de flux
+      // n'a plus lieu d'être, mais l'abonnement aux transactions reste — il sert désormais à
+      // déclencher les vérifications de sortie en temps réel.
+      this.watches.delete(mint);
       this.subscribeToPositionTrades(mint);
 
       logTrade({

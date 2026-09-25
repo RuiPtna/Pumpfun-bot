@@ -17,6 +17,13 @@ export interface TokenWatch {
   lastLiquidityUsd: number;
   lastBuys5m: number;
   lastSells5m: number;
+  /** Flux de transactions accumulé en direct depuis le WebSocket PumpPortal, depuis le début
+   * de l'observation. Aucune API à interroger : chaque transaction sur le token est poussée. */
+  flowBuys: number;
+  flowSells: number;
+  flowSolIn: number;
+  flowSolOut: number;
+  flowBuyers: Set<string>;
   /** Image de profil présente (rempli dès la première lecture DexScreener) */
   hasImage: boolean | null;
   /** Au moins un lien social/site web renseigné */
@@ -56,6 +63,11 @@ export function createTokenWatch(
     realSolHistory: [],
     lastLiquidityUsd: 0,
     lastBuys5m: 0,
+    flowBuys: 0,
+    flowSells: 0,
+    flowSolIn: 0,
+    flowSolOut: 0,
+    flowBuyers: new Set<string>(),
     hasImage: null,
     hasSocialPresence: null,
     lastPriceChange5mPercent: null,
