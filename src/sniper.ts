@@ -47,7 +47,9 @@ function pickExitFlavor(gainPercent: number): string {
 const POSITION_POLL_INTERVAL_MS = 1_000; // resserré : le suivi des positions a son propre budget (Jupiter Price API, 600 req/min), jamais partagé avec le scan
 // Limite technique (indépendante des réglages métier) : au-delà, on arrête d'observer un token
 // qui ne s'est jamais décidé, pour libérer les ressources — voir le commentaire dans beginWatching.
-const WATCH_TECHNICAL_TIMEOUT_MINUTES = 27; // laisse ~15 min de marge d'évaluation après le minAgeMinutes actuel (12 min)
+const WATCH_TECHNICAL_TIMEOUT_MINUTES = 27; // laisse une vraie marge d'évaluation après minAgeMinutes
+/** Nombre maximum de tokens suivis en parallèle — au-delà, les appels API saturent. */
+const MAX_CONCURRENT_WATCHES = 60;
 
 interface MarketCapReading {
   marketCapUsd: number;
@@ -318,6 +320,10 @@ export class AutoTrader {
       platform,
       poolHint
     );
+    // Plafond d'observations simultanées : au-delà, la file d'appels API sature et plus aucun
+    // token n'est correctement évalué. Mieux vaut suivre moins de candidats, mais réellement.
+    if (this.watches.size >= MAX_CONCURRENT_WATCHES) return;
+
     this.watches.set(mint, watch);
     // Abonnement aux transactions du token : chaque achat/vente sera poussé par le WebSocket
     // et accumulé dans le watch (voir handleMessage). C'est le même mécanisme que pour les
@@ -381,6 +387,14 @@ export class AutoTrader {
   }
 
   private async evaluateWatchInner(mint: string, watch: TokenWatch): Promise<void> {
+    // Filtre d'âge AVANT tout appel réseau. Un token trop jeune sera de toute façon rejeté :
+    // l'interroger ne sert à rien et sature la file d'appels. Avec des centaines de tokens
+    // observés simultanément et un budget de quelques appels par seconde, les requêtes
+    // s'empilaient au point de dépasser leur délai d'attente et de revenir vides — plus aucun
+    // token n'était évalué, et tous finissaient en "expiré sans setup validé".
+    const ageMinutes = (Date.now() - watch.createdAt) / 60000;
+    if (ageMinutes < this.params.minAgeMinutes) return;
+
     const reading = await this.readMarketCap(mint, watch.bondingCurveKey);
     if (!reading) return; // pas encore de donnée exploitable, on réessaiera au prochain cycle
 
