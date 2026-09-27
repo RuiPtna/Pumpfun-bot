@@ -34,6 +34,8 @@ export interface TokenWatch {
   lastPairAgeMinutes: number | null;
   lastRealSolReserves: number;
   lastBondingCurveProgressPercent: number;
+  /** Échecs consécutifs de lecture de prix — rend visible une saturation de la file d'appels. */
+  readFailures?: number;
   qualityChecked: boolean;
   decided: boolean;
 }

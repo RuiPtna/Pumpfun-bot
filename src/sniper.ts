@@ -31,7 +31,7 @@ import {
 } from "./db";
 
 const PUMPPORTAL_WS = "wss://pumpportal.fun/api/data"; // gratuit : subscribeMigration (stratégie tokens gradués)
-const WATCH_POLL_INTERVAL_MS = 8_000; // resserré : beaucoup moins de candidats à suivre depuis la stratégie "tokens gradués"
+const WATCH_POLL_INTERVAL_MS = 10_000;
 
 const BIG_WIN_PHRASES = ["🎉 Ka-ching !", "🚀 On décolle !", "💰 Dans la poche !", "🔥 Joli coup !", "✨ Bien joué !"];
 const SMALL_WIN_PHRASES = ["✅ Petit gain sécurisé", "👍 Ça avance", "🙂 Dans le vert"];
@@ -49,7 +49,11 @@ const POSITION_POLL_INTERVAL_MS = 1_000; // resserré : le suivi des positions a
 // qui ne s'est jamais décidé, pour libérer les ressources — voir le commentaire dans beginWatching.
 const WATCH_TECHNICAL_TIMEOUT_MINUTES = 27; // laisse une vraie marge d'évaluation après minAgeMinutes
 /** Nombre maximum de tokens suivis en parallèle — au-delà, les appels API saturent. */
-const MAX_CONCURRENT_WATCHES = 60;
+// Dimensionné pour que la DEMANDE d'appels reste sous le BUDGET disponible :
+// 30 tokens / 10 s = 3 appels/s, contre 5/s autorisés. Sans cette cohérence, la file d'attente
+// grossit indéfiniment, chaque requête dépasse son délai et revient vide — plus rien n'est
+// évalué, et tous les tokens finissent en "expiré sans setup validé".
+const MAX_CONCURRENT_WATCHES = 30;
 
 interface MarketCapReading {
   marketCapUsd: number;
@@ -396,7 +400,19 @@ export class AutoTrader {
     if (ageMinutes < this.params.minAgeMinutes) return;
 
     const reading = await this.readMarketCap(mint, watch.bondingCurveKey);
-    if (!reading) return; // pas encore de donnée exploitable, on réessaiera au prochain cycle
+    if (!reading) {
+      // Échec de lecture : on réessaiera au cycle suivant. On compte ces échecs pour qu'ils
+      // soient VISIBLES — c'est précisément ce silence qui a masqué une saturation de la file
+      // d'appels, où chaque token finissait par expirer sans qu'aucun motif n'apparaisse.
+      watch.readFailures = (watch.readFailures ?? 0) + 1;
+      if (watch.readFailures === 5) {
+        this.notify(
+          `⚠️ Lecture de prix en échec répété (5 fois sur <code>${mint.slice(0, 6)}...</code>) — API pump.fun saturée ou injoignable.`
+        );
+      }
+      return;
+    }
+    watch.readFailures = 0;
 
     // Nom/symbole complétés depuis pump.fun quand l'événement de détection ne les a pas fournis.
     if (watch.name === "?" || watch.symbol === "?") {

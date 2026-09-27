@@ -55,4 +55,4 @@ export const dexScreenerScanLimiter = new RpcLimiter(1);
 // Source prioritaire du market cap (le chiffre officiel affiché sur le site). Même découpage
 // que pour le RPC et DexScreener : les positions ouvertes passent avant le scan de candidats.
 export const pumpFunPositionLimiter = new RpcLimiter(6); // au moins le nb max de positions, pour qu'elles soient vraiment lues en parallèle
-export const pumpFunScanLimiter = new RpcLimiter(2);
+export const pumpFunScanLimiter = new RpcLimiter(5); // > demande du scan (30 tokens / 10 s = 3/s)
