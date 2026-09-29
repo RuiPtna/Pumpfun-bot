@@ -32,12 +32,12 @@ class RpcLimiter {
 }
 
 // Budget dédié au scan des nouveaux tokens candidats (prix + vérifications qualité).
-export const rpcLimiter = new RpcLimiter(5);
+export const rpcLimiter = new RpcLimiter(8); // scan on-chain : 30 tokens / 10 s = 3/s, plus les contrôles de sécurité
 
 // Budget SÉPARÉ, dédié au suivi des positions déjà ouvertes (ton argent en jeu). Sans ça, un
 // afflux de nouveaux tokens à scanner peut retarder la mise à jour du prix de tes positions
 // existantes — inacceptable, car c'est la donnée la plus critique (stop-loss, take-profit, /pnl).
-export const positionRpcLimiter = new RpcLimiter(3);
+export const positionRpcLimiter = new RpcLimiter(6); // au moins le nb max de positions, lues chaque seconde en parallèle
 
 // --- Budgets DexScreener ---
 // DexScreener applique sa propre limite (~300 requêtes/minute, soit 5/s, partagée). Sans
@@ -50,9 +50,3 @@ export const positionRpcLimiter = new RpcLimiter(3);
 // positions : mieux vaut scanner un peu moins vite que de perdre le prix de ses positions.
 export const dexScreenerPositionLimiter = new RpcLimiter(3);
 export const dexScreenerScanLimiter = new RpcLimiter(1);
-
-// --- Budgets API pump.fun ---
-// Source prioritaire du market cap (le chiffre officiel affiché sur le site). Même découpage
-// que pour le RPC et DexScreener : les positions ouvertes passent avant le scan de candidats.
-export const pumpFunPositionLimiter = new RpcLimiter(6); // au moins le nb max de positions, pour qu'elles soient vraiment lues en parallèle
-export const pumpFunScanLimiter = new RpcLimiter(5); // > demande du scan (30 tokens / 10 s = 3/s)
