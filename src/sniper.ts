@@ -1405,7 +1405,7 @@ export async function manualSellPosition(
  * pour garantir une valeur vraiment à jour au moment où l'utilisateur la demande, plutôt que
  * d'attendre le prochain passage du cycle automatique.
  */
-export async function refreshOpenPositionsPrices(telegramId: number, _connection: Connection): Promise<{ updated: number; total: number }> {
+export async function refreshOpenPositionsPrices(telegramId: number, connection: Connection): Promise<{ updated: number; total: number }> {
   const positions = getOpenPositions(telegramId);
 
   const readOne = async (position: OpenPosition): Promise<boolean> => {
