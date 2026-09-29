@@ -109,6 +109,8 @@ export class AutoTrader {
   }
 
   private stoppedByUser = false;
+  /** Cause exacte du dernier échec de lecture de prix, pour un diagnostic utile. */
+  private lastReadFailure = "cause inconnue";
 
   start(): void {
     if (this.ws) return;
@@ -393,13 +395,21 @@ export class AutoTrader {
 
       // Échec technique : le token est probablement encore sur sa courbe. Changer de source
       // donnerait un market cap calculé sur une autre base — mieux vaut réessayer.
-      if (result.status === "error") return null;
+      if (result.status === "error") {
+        this.lastReadFailure = "lecture on-chain en échec (RPC injoignable ou compte illisible)";
+        return null;
+      }
     }
 
     // Token migré : plus de courbe active, DexScreener est la source légitime.
     const dexLimiter = priority === "position" ? dexScreenerPositionLimiter : dexScreenerScanLimiter;
     const dex = await dexLimiter.run(() => fetchDexScreenerData(mint));
-    if (!dex || dex.marketCapUsd <= 0) return null;
+    if (!dex || dex.marketCapUsd <= 0) {
+      this.lastReadFailure = curveKey
+        ? "courbe absente (token migré ?) et DexScreener sans paire exploitable"
+        : "adresse de courbe indérivable et DexScreener sans paire exploitable";
+      return null;
+    }
 
     return {
       marketCapUsd: dex.marketCapUsd,
@@ -440,7 +450,7 @@ export class AutoTrader {
       watch.readFailures = (watch.readFailures ?? 0) + 1;
       if (watch.readFailures === 5) {
         this.notify(
-          `⚠️ Lecture de prix en échec répété (5 fois sur <code>${mint.slice(0, 6)}...</code>) — API pump.fun saturée ou injoignable.`
+          `⚠️ Lecture de prix en échec (5 fois sur <code>${mint.slice(0, 6)}...</code>)\n<i>${this.lastReadFailure}</i>`
         );
       }
       return;
