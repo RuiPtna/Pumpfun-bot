@@ -68,6 +68,8 @@ interface MarketCapReading {
   /** D'où vient ce chiffre — rendu visible dans le message d'achat pour pouvoir diagnostiquer
    * immédiatement une entrée aberrante au lieu de deviner quelle source l'a produite. */
   source: "bonding-curve" | "dexscreener";
+  /** Mode Mayhem, lu dans la même requête que le prix (null si token migré). */
+  isMayhemMode: boolean | null;
 }
 
 export class AutoTrader {
@@ -390,6 +392,7 @@ export class AutoTrader {
           realSolReserves: result.snapshot.realSolReserves,
           bondingCurveProgressPercent: result.snapshot.bondingCurveProgressPercent,
           source: "bonding-curve",
+          isMayhemMode: result.snapshot.isMayhemMode,
         };
       }
 
@@ -417,6 +420,7 @@ export class AutoTrader {
       realSolReserves: 0,
       bondingCurveProgressPercent: 100,
       source: "dexscreener",
+      isMayhemMode: null, // token migré : le flag n'est plus lisible ici
     };
   }
 
@@ -484,13 +488,10 @@ export class AutoTrader {
       // Mode Mayhem : exclusion absolue, vérifiée en premier. On refuse aussi quand la
       // vérification est impossible — sur ce point précis, ne pas acheter vaut mieux que
       // risquer un token dont l'offre est doublée et qu'un agent IA peut vider.
-      const mayhem = await rpcLimiter.run(() => fetchIsMayhemMode(this.connection, mint));
-      if (mayhem !== false) {
-        this.rejectWatch(
-          mint,
-          mayhem === true ? "mode Mayhem activé" : "mode Mayhem impossible à vérifier",
-          0
-        );
+      // Flag déjà obtenu avec le prix : aucun appel RPC supplémentaire. Un token migré
+      // (isMayhemMode null) a forcément dépassé les 24 h d'agent Mayhem, il n'est plus concerné.
+      if (reading.isMayhemMode === true) {
+        this.rejectWatch(mint, "mode Mayhem activé", 0);
         return;
       }
 

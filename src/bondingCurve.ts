@@ -53,6 +53,10 @@ export function deriveBondingCurvePda(mint: string): string | null {
   }
 }
 
+/** Position du flag is_mayhem_mode dans le compte BondingCurve (doc officielle pump.fun) :
+ * discriminateur (8) + 5 × u64 (40) + complete (1) + creator (32) = octet 81. */
+const MAYHEM_FLAG_OFFSET = 81;
+
 const SOL_DECIMALS = 9;
 const TOKEN_DECIMALS = 6; // standard pour les tokens pump.fun
 
@@ -73,6 +77,8 @@ function parseBondingCurveAccount(data: Buffer): BondingCurveState | null {
 }
 
 export interface BondingCurveSnapshot {
+  /** Mode Mayhem — lu au passage, sans appel RPC supplémentaire (même compte). */
+  isMayhemMode: boolean;
   marketCapUsd: number;
   complete: boolean;
   /** SOL réellement déposé par de vrais acheteurs (hors réserves virtuelles de départ) */
@@ -117,6 +123,12 @@ export async function fetchBondingCurveResult(
 
     const state = parseBondingCurveAccount(accountInfo.data);
     if (!state) return { status: "error" };
+
+    // TOKEN MIGRÉ : ses réserves sont remises à zéro à la graduation. Cette vérification doit
+    // impérativement précéder celle des réserves, sinon un token gradué est classé "erreur
+    // technique" — ce qui empêche le repli vers DexScreener et le rend définitivement illisible.
+    if (state.complete) return { status: "not_found" };
+
     if (state.virtualSolReserves <= 0n || state.virtualTokenReserves <= 0n) return { status: "error" };
 
     const priceSolPerToken =
@@ -136,6 +148,9 @@ export async function fetchBondingCurveResult(
     return {
       status: "ok",
       snapshot: {
+        // Le flag Mayhem est dans CE compte, déjà chargé : le lire ici évite un second
+        // getAccountInfo par token, soit la moitié des appels RPC du scan.
+        isMayhemMode: accountInfo.data.length > MAYHEM_FLAG_OFFSET && accountInfo.data[MAYHEM_FLAG_OFFSET] === 1,
         marketCapUsd: marketCapSol * solPriceUsd,
         complete: state.complete,
         realSolReserves: Number(state.realSolReserves) / 10 ** SOL_DECIMALS,
@@ -156,10 +171,6 @@ export async function fetchBondingCurveMarketCap(
   const result = await fetchBondingCurveResult(connection, bondingCurveKey, solPriceUsd);
   return result.status === "ok" ? result.snapshot : null;
 }
-
-/** Position du flag is_mayhem_mode dans le compte BondingCurve (doc officielle pump.fun) :
- * discriminateur (8) + 5 × u64 (40) + complete (1) + creator (32) = octet 81. */
-const MAYHEM_FLAG_OFFSET = 81;
 
 /**
  * Indique si un token a été créé en mode Mayhem.
